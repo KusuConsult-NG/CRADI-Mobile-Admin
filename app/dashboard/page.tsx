@@ -92,8 +92,8 @@ export default function DashboardPage() {
                             <LayoutDashboard className="w-5 h-5 text-white" />
                         </div>
                         <div>
-                            <h1 className="text-xl font-bold text-gray-900">CRADI Admin</h1>
-                            <p className="text-xs text-gray-600">Climate Risk & Disaster Intelligence</p>
+                            <h1 className="text-xl font-bold text-gray-900">EWER Admin</h1>
+                            <p className="text-xs text-gray-600">Early Warning and Emergency Response</p>
                         </div>
                     </div>
 

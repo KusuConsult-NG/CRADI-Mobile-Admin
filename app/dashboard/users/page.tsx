@@ -4,7 +4,7 @@ import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { databases, DATABASE_ID, COLLECTIONS, Query } from '@/lib/appwrite';
-import { Users as UsersIcon, Loader2, Search, ArrowLeft } from 'lucide-react';
+import { Users as UsersIcon, Loader2, Search, ArrowLeft, CheckCircle, Ban, Trash2 } from 'lucide-react';
 import Link from 'next/link';
 
 interface User {
@@ -14,6 +14,8 @@ interface User {
     phoneNumber?: string;
     location?: string;
     verified?: boolean;
+    isApproved?: boolean;
+    isBlocked?: boolean;
     $createdAt: string;
 }
 
@@ -23,6 +25,62 @@ export default function UsersPage() {
     const [users, setUsers] = useState<User[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
+    const [actionLoading, setActionLoading] = useState<string | null>(null);
+
+    async function handleApproveUser(userId: string) {
+        if (!confirm('Are you sure you want to approve this user?')) return;
+
+        try {
+            setActionLoading(userId);
+            await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
+                isApproved: true,
+                verified: true,
+            });
+            await fetchUsers();
+            alert('User approved successfully!');
+        } catch (error) {
+            console.error('Error approving user:', error);
+            alert('Failed to approve user. Please try again.');
+        } finally {
+            setActionLoading(null);
+        }
+    }
+
+    async function handleBlockUser(userId: string, currentlyBlocked: boolean) {
+        const action = currentlyBlocked ? 'unblock' : 'block';
+        if (!confirm(`Are you sure you want to ${action} this user?`)) return;
+
+        try {
+            setActionLoading(userId);
+            await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
+                isBlocked: !currentlyBlocked,
+            });
+            await fetchUsers();
+            alert(`User ${action}ed successfully!`);
+        } catch (error) {
+            console.error(`Error ${action}ing user:`, error);
+            alert(`Failed to ${action} user. Please try again.`);
+        } finally {
+            setActionLoading(null);
+        }
+    }
+
+    async function handleDeleteUser(userId: string) {
+        if (!confirm('Are you sure you want to DELETE this user? This action cannot be undone!')) return;
+        if (!confirm('This will permanently remove all user data. Are you absolutely sure?')) return;
+
+        try {
+            setActionLoading(userId);
+            await databases.deleteDocument(DATABASE_ID, COLLECTIONS.USERS, userId);
+            await fetchUsers();
+            alert('User deleted successfully!');
+        } catch (error) {
+            console.error('Error deleting user:', error);
+            alert('Failed to delete user. Please try again.');
+        } finally {
+            setActionLoading(null);
+        }
+    }
 
     useEffect(() => {
         if (!authLoading && !user) {
@@ -79,7 +137,7 @@ export default function UsersPage() {
                             </div>
                             <div>
                                 <h1 className="text-xl font-bold text-gray-900">User Management</h1>
-                                <p className="text-xs text-gray-600">View and manage CRADI users</p>
+                                <p className="text-xs text-gray-600">View and manage EWER users</p>
                             </div>
                         </div>
                     </div>
@@ -127,12 +185,15 @@ export default function UsersPage() {
                                         <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
                                             Joined
                                         </th>
+                                        <th className="px-6 py-4 text-left text-xs font-semibold text-gray-600 uppercase tracking-wider">
+                                            Actions
+                                        </th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-200">
                                     {filteredUsers.length === 0 ? (
                                         <tr>
-                                            <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
+                                            <td colSpan={6} className="px-6 py-12 text-center text-gray-500">
                                                 No users found
                                             </td>
                                         </tr>
@@ -165,6 +226,51 @@ export default function UsersPage() {
                                                 </td>
                                                 <td className="px-6 py-4 text-sm text-gray-700">
                                                     {new Date(user.$createdAt).toLocaleDateString()}
+                                                </td>
+                                                <td className="px-6 py-4">
+                                                    <div className="flex items-center gap-2">
+                                                        {!user.isApproved && (
+                                                            <button
+                                                                onClick={() => handleApproveUser(user.$id)}
+                                                                disabled={actionLoading === user.$id}
+                                                                className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
+                                                                title="Approve user"
+                                                            >
+                                                                {actionLoading === user.$id ? (
+                                                                    <Loader2 className="w-4 h-4 animate-spin" />
+                                                                ) : (
+                                                                    <CheckCircle className="w-4 h-4" />
+                                                                )}
+                                                            </button>
+                                                        )}
+                                                        <button
+                                                            onClick={() => handleBlockUser(user.$id, user.isBlocked || false)}
+                                                            disabled={actionLoading === user.$id}
+                                                            className={`p-2 rounded-lg transition-colors disabled:opacity-50 ${user.isBlocked
+                                                                    ? 'text-blue-600 hover:bg-blue-50'
+                                                                    : 'text-orange-600 hover:bg-orange-50'
+                                                                }`}
+                                                            title={user.isBlocked ? 'Unblock user' : 'Block user'}
+                                                        >
+                                                            {actionLoading === user.$id ? (
+                                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                            ) : (
+                                                                <Ban className="w-4 h-4" />
+                                                            )}
+                                                        </button>
+                                                        <button
+                                                            onClick={() => handleDeleteUser(user.$id)}
+                                                            disabled={actionLoading === user.$id}
+                                                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                                                            title="Delete user"
+                                                        >
+                                                            {actionLoading === user.$id ? (
+                                                                <Loader2 className="w-4 h-4 animate-spin" />
+                                                            ) : (
+                                                                <Trash2 className="w-4 h-4" />
+                                                            )}
+                                                        </button>
+                                                    </div>
                                                 </td>
                                             </tr>
                                         ))
