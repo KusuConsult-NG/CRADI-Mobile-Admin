@@ -7,8 +7,8 @@ import { Toaster } from "react-hot-toast";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "CRADI Admin Panel",
-  description: "Administrative panel for CRADI Mobile disaster reporting system",
+  title: "EWER Admin Panel",
+  description: "Early Warning and Emergency Response - Admin Panel",
 };
 
 export default function RootLayout({
