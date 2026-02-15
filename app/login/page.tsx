@@ -31,7 +31,7 @@ export default function LoginPage() {
         return (
             <div className="min-h-screen login-gradient flex items-center justify-center">
                 <div className="glass-card rounded-2xl p-8">
-                    <Loader2 className="w-12 h-12 animate-spin text-blue-400" />
+                    <Loader2 className="w-12 h-12 animate-spin text-red-400" />
                 </div>
             </div>
         );
@@ -42,13 +42,13 @@ export default function LoginPage() {
             <div className="w-full max-w-md">
                 {/* Logo and Title */}
                 <div className="text-center mb-8 animate-fadeIn">
-                    <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-blue-500 to-blue-600 rounded-3xl mb-6 shadow-2xl">
+                    <div className="inline-flex items-center justify-center w-20 h-20 bg-gradient-to-br from-[#E63946] to-[#9D0208] rounded-3xl mb-6 shadow-2xl">
                         <Shield className="w-10 h-10 text-white drop-shadow-lg" />
                     </div>
                     <h1 className="text-4xl font-bold text-white mb-3 tracking-tight">
                         CRADI Admin
                     </h1>
-                    <p className="text-blue-200 text-lg">
+                    <p className="text-red-200 text-lg">
                         Climate Risk & Disaster Intelligence
                     </p>
                 </div>
@@ -123,7 +123,7 @@ export default function LoginPage() {
                     </div>
                 </div>
 
-                <p className="text-center text-sm text-blue-200/60 mt-8">
+                <p className="text-center text-sm text-red-200/60 mt-8">
                     © 2026 CRADI. All rights reserved.
                 </p>
             </div>

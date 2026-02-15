@@ -8,19 +8,19 @@
     --foreground: 0 0% 98%;
     --card: 240 10% 3.9%;
     --card-foreground: 0 0% 98%;
-    --primary: 217 91% 60%;
+    --primary: 353 82% 57%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 4% 16%;
+    --secondary: 349 93% 32%;
     --secondary-foreground: 0 0% 98%;
     --muted: 240 4% 16%;
     --muted-foreground: 240 5% 65%;
-    --accent: 217 91% 60%;
+    --accent: 353 82% 57%;
     --accent-foreground: 0 0% 100%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 0 0% 98%;
     --border: 240 4% 16%;
     --input: 240 4% 16%;
-    --ring: 217 91% 60%;
+    --ring: 353 82% 57%;
     --radius: 0.5rem;
   }
 }
@@ -42,9 +42,9 @@ body {
 .login-gradient {
   background: linear-gradient(
     135deg,
-    hsl(217, 91%, 12%) 0%,
-    hsl(217, 91%, 20%) 50%,
-    hsl(217, 91%, 12%) 100%
+    hsl(349, 93%, 12%) 0%,
+    hsl(349, 93%, 20%) 50%,
+    hsl(349, 93%, 12%) 100%
   );
   position: relative;
   overflow: hidden;
@@ -59,7 +59,7 @@ body {
   height: 200%;
   background: radial-gradient(
     circle,
-    rgba(66, 153, 225, 0.1) 0%,
+    rgba(230, 57, 70, 0.15) 0%,
     transparent 70%
   );
   animation: pulse 15s ease-in-out infinite;
@@ -78,11 +78,11 @@ body {
 .glass-card {
   background: rgba(17, 25, 40, 0.75);
   backdrop-filter: blur(16px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.125);
+  border: 1px solid rgba(230, 57, 70, 0.2);
   box-shadow: 
     0 4px 6px -1px rgba(0, 0, 0, 0.3),
     0 2px 4px -1px rgba(0, 0, 0, 0.2),
-    0 0 0 1px rgba(255, 255, 255, 0.05);
+    0 0 0 1px rgba(230, 57, 70, 0.1);
 }
 
 /* Input Styles */
@@ -94,25 +94,26 @@ body {
 
 .input-modern:focus {
   background: rgba(255, 255, 255, 0.08);
-  border-color: hsl(var(--primary));
-  box-shadow: 0 0 0 3px rgba(66, 153, 225, 0.1);
+  border-color: #E63946;
+  box-shadow: 0 0 0 3px rgba(230, 57, 70, 0.2);
   outline: none;
 }
 
 /* Button Styles */
 .btn-primary {
-  background: linear-gradient(135deg, hsl(217, 91%, 60%) 0%, hsl(217, 91%, 50%) 100%);
+  background: linear-gradient(135deg, #E63946 0%, #9D0208 100%);
   box-shadow: 
-    0 4px 6px -1px rgba(66, 153, 225, 0.3),
-    0 2px 4px -1px rgba(66, 153, 225, 0.2);
+    0 4px 6px -1px rgba(230, 57, 70, 0.4),
+    0 2px 4px -1px rgba(230, 57, 70, 0.3);
   transition: all 0.3s ease;
 }
 
 .btn-primary:hover {
   transform: translateY(-2px);
+  background: linear-gradient(135deg, #EF476F 0%, #9D0208 100%);
   box-shadow: 
-    0 6px 12px -2px rgba(66, 153, 225, 0.4),
-    0 4px 8px -2px rgba(66, 153, 225, 0.3);
+    0 6px 12px -2px rgba(230, 57, 70, 0.5),
+    0 4px 8px -2px rgba(230, 57, 70, 0.4);
 }
 
 .btn-primary:active {
