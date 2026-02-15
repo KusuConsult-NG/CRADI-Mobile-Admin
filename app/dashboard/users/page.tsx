@@ -43,10 +43,20 @@ export default function UsersPage() {
             onConfirm: async () => {
                 try {
                     setActionLoading(userId);
+
+                    // Update custom fields in database
                     await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
                         isApproved: true,
                         verified: true,
                     });
+
+                    // Update Appwrite's built-in email verification status
+                    await fetch('/api/users/verify-email', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ userId }),
+                    });
+
                     await fetchUsers();
                     toast.success('User approved successfully!');
                 } catch (error) {
@@ -336,8 +346,8 @@ export default function UsersPage() {
                             <button
                                 onClick={confirmModal.onConfirm}
                                 className={`px-4 py-2 rounded-lg font-medium transition-colors ${confirmModal.isDangerous
-                                        ? 'bg-red-600 text-white hover:bg-red-700'
-                                        : 'bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90'
+                                    ? 'bg-red-600 text-white hover:bg-red-700'
+                                    : 'bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90'
                                     }`}
                             >
                                 Confirm
