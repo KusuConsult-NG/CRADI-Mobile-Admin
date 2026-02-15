@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { databases, DATABASE_ID, COLLECTIONS, Query } from '@/lib/appwrite';
 import { Users as UsersIcon, Loader2, Search, ArrowLeft, CheckCircle, Ban, Trash2 } from 'lucide-react';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
 
 interface User {
     $id: string;
@@ -26,60 +27,86 @@ export default function UsersPage() {
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState('');
     const [actionLoading, setActionLoading] = useState<string | null>(null);
+    const [confirmModal, setConfirmModal] = useState<{
+        isOpen: boolean;
+        title: string;
+        message: string;
+        onConfirm: () => void;
+        isDangerous?: boolean;
+    }>({ isOpen: false, title: '', message: '', onConfirm: () => { } });
 
     async function handleApproveUser(userId: string) {
-        if (!confirm('Are you sure you want to approve this user?')) return;
-
-        try {
-            setActionLoading(userId);
-            await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
-                isApproved: true,
-                verified: true,
-            });
-            await fetchUsers();
-            alert('User approved successfully!');
-        } catch (error) {
-            console.error('Error approving user:', error);
-            alert('Failed to approve user. Please try again.');
-        } finally {
-            setActionLoading(null);
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: 'Approve User',
+            message: 'Are you sure you want to approve this user? They will gain full access to the platform.',
+            onConfirm: async () => {
+                try {
+                    setActionLoading(userId);
+                    await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
+                        isApproved: true,
+                        verified: true,
+                    });
+                    await fetchUsers();
+                    toast.success('User approved successfully!');
+                } catch (error) {
+                    console.error('Error approving user:', error);
+                    toast.error('Failed to approve user. Please try again.');
+                } finally {
+                    setActionLoading(null);
+                    setConfirmModal({ ...confirmModal, isOpen: false });
+                }
+            },
+        });
     }
 
     async function handleBlockUser(userId: string, currentlyBlocked: boolean) {
         const action = currentlyBlocked ? 'unblock' : 'block';
-        if (!confirm(`Are you sure you want to ${action} this user?`)) return;
-
-        try {
-            setActionLoading(userId);
-            await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
-                isBlocked: !currentlyBlocked,
-            });
-            await fetchUsers();
-            alert(`User ${action}ed successfully!`);
-        } catch (error) {
-            console.error(`Error ${action}ing user:`, error);
-            alert(`Failed to ${action} user. Please try again.`);
-        } finally {
-            setActionLoading(null);
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: `${action.charAt(0).toUpperCase() + action.slice(1)} User`,
+            message: `Are you sure you want to ${action} this user? ${currentlyBlocked ? 'They will regain access to the platform.' : 'They will lose access to the platform.'}`,
+            isDangerous: !currentlyBlocked,
+            onConfirm: async () => {
+                try {
+                    setActionLoading(userId);
+                    await databases.updateDocument(DATABASE_ID, COLLECTIONS.USERS, userId, {
+                        isBlocked: !currentlyBlocked,
+                    });
+                    await fetchUsers();
+                    toast.success(`User ${action}ed successfully!`);
+                } catch (error) {
+                    console.error(`Error ${action}ing user:`, error);
+                    toast.error(`Failed to ${action} user. Please try again.`);
+                } finally {
+                    setActionLoading(null);
+                    setConfirmModal({ ...confirmModal, isOpen: false });
+                }
+            },
+        });
     }
 
     async function handleDeleteUser(userId: string) {
-        if (!confirm('Are you sure you want to DELETE this user? This action cannot be undone!')) return;
-        if (!confirm('This will permanently remove all user data. Are you absolutely sure?')) return;
-
-        try {
-            setActionLoading(userId);
-            await databases.deleteDocument(DATABASE_ID, COLLECTIONS.USERS, userId);
-            await fetchUsers();
-            alert('User deleted successfully!');
-        } catch (error) {
-            console.error('Error deleting user:', error);
-            alert('Failed to delete user. Please try again.');
-        } finally {
-            setActionLoading(null);
-        }
+        setConfirmModal({
+            isOpen: true,
+            title: 'Delete User',
+            message: 'Are you absolutely sure you want to DELETE this user? This action cannot be undone! All user data will be permanently removed from the system.',
+            isDangerous: true,
+            onConfirm: async () => {
+                try {
+                    setActionLoading(userId);
+                    await databases.deleteDocument(DATABASE_ID, COLLECTIONS.USERS, userId);
+                    await fetchUsers();
+                    toast.success('User deleted successfully!');
+                } catch (error) {
+                    console.error('Error deleting user:', error);
+                    toast.error('Failed to delete user. Please try again.');
+                } finally {
+                    setActionLoading(null);
+                    setConfirmModal({ ...confirmModal, isOpen: false });
+                }
+            },
+        });
     }
 
     useEffect(() => {
@@ -209,10 +236,10 @@ export default function UsersPage() {
                                                     </div>
                                                 </td>
                                                 <td className="px-6 py-4 text-sm text-gray-700">
-                                                    {user.phoneNumber || 'N/A'}
+                                                    {user.phoneNumber || user.email || 'Not provided'}
                                                 </td>
                                                 <td className="px-6 py-4 text-sm text-gray-700">
-                                                    {user.location || 'N/A'}
+                                                    {(user as any).address || 'Not provided'}
                                                 </td>
                                                 <td className="px-6 py-4">
                                                     <span
@@ -247,8 +274,8 @@ export default function UsersPage() {
                                                             onClick={() => handleBlockUser(user.$id, user.isBlocked || false)}
                                                             disabled={actionLoading === user.$id}
                                                             className={`p-2 rounded-lg transition-colors disabled:opacity-50 ${user.isBlocked
-                                                                    ? 'text-blue-600 hover:bg-blue-50'
-                                                                    : 'text-orange-600 hover:bg-orange-50'
+                                                                ? 'text-blue-600 hover:bg-blue-50'
+                                                                : 'text-orange-600 hover:bg-orange-50'
                                                                 }`}
                                                             title={user.isBlocked ? 'Unblock user' : 'Block user'}
                                                         >
@@ -288,6 +315,37 @@ export default function UsersPage() {
                     </div>
                 )}
             </div>
+
+            {/* Confirmation Modal */}
+            {confirmModal.isOpen && (
+                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6 animate-in fade-in duration-200">
+                        <h3 className={`text-xl font-bold mb-4 ${confirmModal.isDangerous ? 'text-red-600' : 'text-gray-900'}`}>
+                            {confirmModal.title}
+                        </h3>
+                        <p className="text-gray-600 mb-6 leading-relaxed">
+                            {confirmModal.message}
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                onClick={() => setConfirmModal({ ...confirmModal, isOpen: false })}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={confirmModal.onConfirm}
+                                className={`px-4 py-2 rounded-lg font-medium transition-colors ${confirmModal.isDangerous
+                                        ? 'bg-red-600 text-white hover:bg-red-700'
+                                        : 'bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90'
+                                    }`}
+                            >
+                                Confirm
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
