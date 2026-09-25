@@ -1,19 +1,26 @@
 'use client';
 
-import { useState } from 'react';
-import { useAuth } from '@/lib/auth-context';
+import { useEffect, useState } from 'react';
+import { friendlyAuthError, useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { Loader2, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import Image from 'next/image';
 
 export default function LoginPage() {
-    const { login, loading: authLoading } = useAuth();
+    const { user, login, loading: authLoading } = useAuth();
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState('');
     const router = useRouter();
+
+    // Already signed in as an admin (or just logged in): go to the dashboard.
+    useEffect(() => {
+        if (!authLoading && user) {
+            router.replace('/dashboard');
+        }
+    }, [user, authLoading, router]);
 
     async function handleSubmit(e: React.FormEvent) {
         e.preventDefault();
@@ -22,14 +29,14 @@ export default function LoginPage() {
 
         try {
             await login(email, password);
-        } catch (error: any) {
-            setError(error.message || 'Failed to sign in. Please check your credentials.');
+        } catch (err) {
+            setError(friendlyAuthError(err));
         } finally {
             setLoading(false);
         }
     }
 
-    if (authLoading) {
+    if (authLoading || user) {
         return (
             <div className="min-h-screen login-gradient flex items-center justify-center">
                 <div className="glass-card rounded-2xl p-8">

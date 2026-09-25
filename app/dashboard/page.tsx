@@ -3,7 +3,8 @@
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { databases, DATABASE_ID, COLLECTIONS, Query } from '@/lib/appwrite';
+import { collection, getCountFromServer, query, where, type Query } from 'firebase/firestore';
+import { db, COLLECTIONS } from '@/lib/firebase';
 import {
     LayoutDashboard,
     Users,
@@ -12,67 +13,99 @@ import {
     BookOpen,
     LogOut,
     Loader2,
-    TrendingUp,
     Clock,
     CheckCircle2,
-    XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
+
+interface Stats {
+    totalUsers: number | null;
+    totalReports: number | null;
+    pendingReports: number | null;
+    approvedReports: number | null;
+    emergencyContacts: number | null;
+    knowledgeArticles: number | null;
+}
+
+const EMPTY_STATS: Stats = {
+    totalUsers: null,
+    totalReports: null,
+    pendingReports: null,
+    approvedReports: null,
+    emergencyContacts: null,
+    knowledgeArticles: null,
+};
+
+async function countOf(q: Query): Promise<number> {
+    const snapshot = await getCountFromServer(q);
+    return snapshot.data().count;
+}
+
+const STAT_KEYS: (keyof Stats)[] = [
+    'totalUsers',
+    'totalReports',
+    'pendingReports',
+    'approvedReports',
+    'emergencyContacts',
+    'knowledgeArticles',
+];
+
+/** Loads each count independently so one failure doesn't blank the others. */
+async function loadStats(): Promise<{ stats: Stats; failures: number; total: number }> {
+    const reports = collection(db, COLLECTIONS.REPORTS);
+    const results = await Promise.allSettled([
+        countOf(collection(db, COLLECTIONS.USERS)),
+        countOf(reports),
+        countOf(query(reports, where('status', '==', 'pending'))),
+        countOf(query(reports, where('status', 'in', ['approved', 'verified']))),
+        countOf(collection(db, COLLECTIONS.CONTACTS)),
+        countOf(collection(db, COLLECTIONS.KNOWLEDGE_BASE)),
+    ]);
+
+    const stats: Stats = { ...EMPTY_STATS };
+    let failures = 0;
+    results.forEach((result, i) => {
+        if (result.status === 'fulfilled') {
+            stats[STAT_KEYS[i]] = result.value;
+        } else {
+            failures += 1;
+            console.error(`Failed to load ${STAT_KEYS[i]}:`, result.reason);
+        }
+    });
+    return { stats, failures, total: STAT_KEYS.length };
+}
+
+function formatStat(value: number | null): string {
+    return value === null ? '—' : value.toLocaleString();
+}
 
 export default function DashboardPage() {
     const { user, loading: authLoading, logout } = useAuth();
     const router = useRouter();
-    const [stats, setStats] = useState({
-        totalUsers: 0,
-        totalReports: 0,
-        pendingReports: 0,
-        resolvedReports: 0,
-        emergencyContacts: 0,
-        knowledgeArticles: 0,
-    });
+    const [stats, setStats] = useState<Stats>(EMPTY_STATS);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
         if (!authLoading && !user) {
             router.push('/login');
-        } else if (user) {
-            fetchStats();
+            return;
         }
-    }, [user, authLoading, router]);
+        if (!user) return;
 
-    async function fetchStats() {
-        try {
-            setLoading(true);
-
-            const [users, reports, emergencyContacts, knowledgeBase] = await Promise.all([
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.USERS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.REPORTS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.EMERGENCY_CONTACTS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.KNOWLEDGE_BASE),
-            ]);
-
-            // Count reports by status
-            const pendingReports = reports.documents.filter(
-                (r: any) => r.status === 'pending' || r.status === 'submitted'
-            ).length;
-            const resolvedReports = reports.documents.filter(
-                (r: any) => r.status === 'resolved' || r.status === 'verified'
-            ).length;
-
-            setStats({
-                totalUsers: users.total,
-                totalReports: reports.total,
-                pendingReports,
-                resolvedReports,
-                emergencyContacts: emergencyContacts.total,
-                knowledgeArticles: knowledgeBase.total,
-            });
-        } catch (error) {
-            console.error('Error fetching stats:', error);
-        } finally {
+        let cancelled = false;
+        void loadStats().then(({ stats: next, failures, total }) => {
+            if (cancelled) return;
+            setStats(next);
             setLoading(false);
-        }
-    }
+            if (failures > 0) {
+                toast.error(`Could not load ${failures} of ${total} statistics.`);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [user, authLoading, router]);
 
     if (authLoading || !user) {
         return (
@@ -99,7 +132,7 @@ export default function DashboardPage() {
 
                     <div className="flex items-center gap-4">
                         <div className="text-right">
-                            <p className="text-sm font-medium text-gray-900">{user.name || user.email}</p>
+                            <p className="text-sm font-medium text-gray-900">{user.displayName || user.email}</p>
                             <p className="text-xs text-gray-500">Administrator</p>
                         </div>
                         <button
@@ -117,10 +150,10 @@ export default function DashboardPage() {
                 {/* Welcome Section */}
                 <div className="mb-8">
                     <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                        Welcome back, {user.name || 'Admin'}!
+                        Welcome back, {user.displayName || 'Admin'}!
                     </h2>
                     <p className="text-gray-600">
-                        Here's an overview of the CRADI system status and recent activity.
+                        Here&apos;s an overview of the CRADI system status and recent activity.
                     </p>
                 </div>
 
@@ -138,9 +171,8 @@ export default function DashboardPage() {
                                     <div className="w-12 h-12 bg-red-50 rounded-lg flex items-center justify-center">
                                         <Users className="w-6 h-6 text-[#E63946]" />
                                     </div>
-                                    <TrendingUp className="w-5 h-5 text-green-500" />
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.totalUsers}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalUsers)}</h3>
                                 <p className="text-gray-600 text-sm">Total Users</p>
                             </div>
 
@@ -151,7 +183,7 @@ export default function DashboardPage() {
                                         <AlertTriangle className="w-6 h-6 text-orange-600" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.totalReports}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalReports)}</h3>
                                 <p className="text-gray-600 text-sm">Total Reports</p>
                             </div>
 
@@ -162,7 +194,7 @@ export default function DashboardPage() {
                                         <Clock className="w-6 h-6 text-yellow-600" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.pendingReports}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.pendingReports)}</h3>
                                 <p className="text-gray-600 text-sm">Pending Reports</p>
                             </div>
 
@@ -173,8 +205,8 @@ export default function DashboardPage() {
                                         <CheckCircle2 className="w-6 h-6 text-[#06D6A0]" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.resolvedReports}</h3>
-                                <p className="text-gray-600 text-sm">Resolved Reports</p>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.approvedReports)}</h3>
+                                <p className="text-gray-600 text-sm">Approved / Verified Reports</p>
                             </div>
 
                             {/* Emergency Contacts */}
@@ -185,7 +217,7 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">
-                                    {stats.emergencyContacts}
+                                    {formatStat(stats.emergencyContacts)}
                                 </h3>
                                 <p className="text-gray-600 text-sm">Emergency Contacts</p>
                             </div>
@@ -198,7 +230,7 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">
-                                    {stats.knowledgeArticles}
+                                    {formatStat(stats.knowledgeArticles)}
                                 </h3>
                                 <p className="text-gray-600 text-sm">Knowledge Articles</p>
                             </div>
@@ -207,7 +239,7 @@ export default function DashboardPage() {
                         {/* Quick Actions */}
                         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                             <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                 <Link
                                     href="/dashboard/users"
                                     className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-[#E63946] hover:bg-red-50 transition-all group"
@@ -228,15 +260,6 @@ export default function DashboardPage() {
                                     </span>
                                 </Link>
 
-                                <Link
-                                    href="/dashboard/contacts"
-                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-purple-500 hover:bg-purple-50 transition-all group"
-                                >
-                                    <Phone className="w-5 h-5 text-gray-600 group-hover:text-purple-600" />
-                                    <span className="font-medium text-gray-700 group-hover:text-purple-700">
-                                        Emergency Contacts
-                                    </span>
-                                </Link>
 
                                 <Link
                                     href="/dashboard/knowledge"

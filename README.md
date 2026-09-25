@@ -1,142 +1,78 @@
 # CRADI Admin Panel
 
-> **Web-based administration panel for CRADI Mobile**  
+> **Web-based administration panel for CRADI / EWER Mobile**
 > Climate Risk & Disaster Intelligence Management
 
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/KusuConsult-NG/CRADI-Mobile-Admin)
+## Overview
 
-## 📋 Overview
+A Next.js app for administrators of the CRADI Mobile ecosystem. It uses the same
+Firebase project as the Flutter app (`ewer-8f788`): Firebase Auth for sign-in and
+Cloud Firestore for data (`users`, `reports`, `knowledge_base`, `contacts`).
 
-The CRADI Admin Panel is a Next.js web application that provides administrators with tools to manage the CRADI Mobile ecosystem, including user management, disaster report verification, and knowledge base administration.
+## Features
 
-## ✨ Features
+- **Dashboard**: live counts of users, reports (pending / approved + verified), contacts and knowledge articles
+- **User management**: approve, change role, block/unblock, delete (Auth account + profile)
+- **Report management**: filter by status, set approved / verified / rejected / pending, view images
+- **Knowledge base**: create, edit and delete hazard guides
+- **Admin-only access**: requires the Firebase custom claim `admin: true` or `role: 'admin'`
 
-- **User Management**: View, search, and manage CRADI Mobile users
-- **Report Verification**: Verify, resolve, and manage disaster reports
-- **Dashboard**: Real-time statistics and system overview
-- **Role-Based Access**: Secure admin-only access with label verification
-- **CRADI Branding**: Matches CRADI Mobile's visual identity
+## Quick Start
 
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Node.js 20+
-- Appwrite Cloud account
-- Access to CRADI Mobile project
-
-### Installation
+Prerequisites: Node.js 22+, access to the `ewer-8f788` Firebase project.
 
 ```bash
-# Clone the repository
-git clone https://github.com/KusuConsult-NG/CRADI-Mobile-Admin.git
-cd CRADI-Mobile-Admin
-
-# Install dependencies
 npm install
-
-# Set up environment variables
-cp .env.example .env.local
-# Edit .env.local with your Appwrite credentials
-
-# Run development server
-npm run dev
+cp .env.example .env.local   # add FIREBASE_SERVICE_ACCOUNT (see SETUP.md)
+npm run dev                  # http://localhost:3000
 ```
 
-Access at http://localhost:3000
+The public Firebase web config is built into `lib/firebase.ts` (overridable with
+`NEXT_PUBLIC_FIREBASE_*` variables). Server credentials are only needed for the
+`/api/admin/*` routes (email verification, block, delete, role changes).
 
-## 🔐 Database Setup
+See [SETUP.md](./SETUP.md) for granting admin access and deployment.
 
-**Required: Set up database permissions before first use**
+## Environment Variables
 
-1. Get API Key from [Appwrite Console](https://cloud.appwrite.io/console)
-2. Run permission setup:
-   ```bash
-   APPWRITE_API_KEY=your_key npm run setup:permissions
-   ```
-3. Create admin user:
-   ```bash
-   APPWRITE_API_KEY=your_key npm run create:admin
-   ```
+| Variable | Where | Purpose |
+| --- | --- | --- |
+| `NEXT_PUBLIC_FIREBASE_*` | client | Optional overrides of the web config |
+| `FIREBASE_SERVICE_ACCOUNT` | server | Service-account JSON for firebase-admin |
+| `GOOGLE_APPLICATION_CREDENTIALS` | server | Alternative: path to a service-account key file |
 
-See [SETUP.md](./SETUP.md) for detailed instructions.
-
-## 📝 Environment Variables
-
-Create `.env.local` with:
-
-```env
-NEXT_PUBLIC_APP_NAME=CRADI Admin Panel
-NEXT_PUBLIC_APPWRITE_ENDPOINT=https://fra.cloud.appwrite.io/v1
-NEXT_PUBLIC_APPWRITE_PROJECT=6941cdb400050e7249d5
-NEXT_PUBLIC_DATABASE_ID=6941e2c2003705bb5a25
-```
-
-## 🌐 Deployment
-
-### Deploy to Vercel
-
-1. Push code to GitHub (already done)
-2. Import repository in Vercel
-3. Add environment variables
-4. Deploy!
-
-[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/KusuConsult-NG/CRADI-Mobile-Admin)
-
-## 📚 Documentation
-
-- [Setup Guide](./SETUP.md) - Complete setup instructions
-- [Scripts Documentation](./scripts/README.md) - Database permission scripts
-- [Walkthrough](./WALKTHROUGH.md) - Usage guide
-
-## 🏗️ Project Structure
+## Project Structure
 
 ```
-cradi-admin/
-├── app/
-│   ├── dashboard/          # Dashboard pages
-│   │   ├── page.tsx        # Main dashboard
-│   │   ├── users/          # User management
-│   │   └── reports/        # Report management
-│   └── login/              # Authentication
-├── lib/
-│   ├── appwrite.ts         # Appwrite SDK config
-│   └── auth-context.tsx    # Auth provider with admin check
-├── scripts/
-│   ├── setup-permissions.js  # Permission configuration
-│   ├── create-admin.js       # Admin user creation
-│   └── check-permissions.js  # Permission audit
-└── SETUP.md                # Setup documentation
+app/
+├── api/admin/users/[uid]/route.ts  # Admin-only Auth operations (firebase-admin)
+├── dashboard/                      # Dashboard, users, reports, knowledge
+└── login/                          # Sign-in
+lib/
+├── firebase.ts                     # Client SDK init + shared constants
+├── firebase-admin.ts               # Server SDK init + admin token verification
+├── admin-api.ts                    # Authenticated fetch helper
+└── auth-context.tsx                # Auth provider with admin-claim check
+scripts/
+└── set-admin.js                    # Grant admin claims to a user
 ```
 
-## 🔒 Security
+## Security
 
-- **Admin-Only Access**: Only users with `admin` label can access
-- **Session Validation**: Admin status verified on every request
-- **API Key Protection**: Server API keys never exposed to client
-- **Environment Variables**: Sensitive data in `.env.local` (gitignored)
+- Admin access is enforced by Firebase custom claims, checked in the UI, in the
+  Firestore security rules, and on every API route (`verifyIdToken` + admin claim).
+- Service-account credentials are server-only; never commit them.
 
-## 🛠️ Available Scripts
+## Scripts
 
-- `npm run dev` - Start development server
-- `npm run build` - Build for production
-- `npm run start` - Start production server
-- `npm run setup:permissions` - Configure database permissions
-- `npm run create:admin` - Create admin user
-- `npm run check:permissions` - Audit permissions
+- `npm run dev` / `npm run build` / `npm run start`
+- `npm run lint` – ESLint
+- `npm run set:admin -- <email>` – grant admin to an existing user
 
-## 🤝 Contributing
+## Related Projects
 
-This repository is part of the CRADI Mobile ecosystem developed by KusuConsult-NG.
-
-## 📄 License
-
-Private - KusuConsult-NG
-
-## 🔗 Related Projects
-
-- [CRADI Mobile](https://github.com/KusuConsult-NG/CRADI-mobile) - Flutter mobile application
+- [CRADI Mobile](https://github.com/KusuConsult-NG/CRADI-mobile) – Flutter mobile application
 
 ---
 
-**Built with** Next.js 16 • React • TypeScript • Appwrite • Tailwind CSS
+**Built with** Next.js 16 • React • TypeScript • Firebase • Tailwind CSS

@@ -2,150 +2,64 @@
 
 ## Prerequisites
 
-- Node.js 20+ installed
-- Appwrite Cloud account
-- Access to CRADI Mobile Appwrite project
+- Node.js 22+
+- Access to the Firebase project `ewer-8f788` (the one used by CRADI Mobile)
 
-## 1. Install Dependencies
+## 1. Install
 
 ```bash
-cd /Users/mac/cradi-admin
 npm install
 ```
 
-## 2. Configure Environment Variables
+## 2. Server credentials (for admin API routes)
 
-The `.env.local` file should already contain:
+Approving (email verification), blocking, deleting users and changing roles use
+`firebase-admin` in Next.js API routes. Provide a service account:
 
-```env
-NEXT_PUBLIC_APP_NAME=CRADI Admin Panel
-NEXT_PUBLIC_APPWRITE_ENDPOINT=https://fra.cloud.appwrite.io/v1
-NEXT_PUBLIC_APPWRITE_PROJECT=6941cdb400050e7249d5
-NEXT_PUBLIC_DATABASE_ID=6941e2c2003705bb5a25
-```
+1. Firebase Console → Project settings → **Service accounts** → *Generate new private key*.
+2. Put the JSON (as a single line) in `.env.local` / your hosting provider:
 
-## 3. Set Up Database Permissions
+   ```env
+   FIREBASE_SERVICE_ACCOUNT={"type":"service_account","project_id":"ewer-8f788",...}
+   ```
 
-### Get API Key
+   or set `GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`.
 
-1. Go to [Appwrite Console](https://cloud.appwrite.io/console)
-2. Select CRADI Mobile project
-3. Navigate to **Overview** → **API Keys**
-4. Create new API key with scopes:
-   - `databases.read`
-   - `databases.write`
-   - `users.read`
-   - `users.write`
+Without credentials the dashboard, report and knowledge pages still work, but the
+API routes return `500 Server not configured`.
 
-### Run Permission Setup Script
+> Never commit service-account keys. Rotate any key that has been exposed.
+
+## 3. Grant admin access
+
+The user must already exist in Firebase Auth (e.g. registered via the mobile app).
 
 ```bash
-cd /Users/mac/cradi-admin
-APPWRITE_API_KEY=your_api_key npm run setup:permissions
+GOOGLE_APPLICATION_CREDENTIALS=./key.json npm run set:admin -- admin@example.org
 ```
 
-This will configure permissions for all collections according to the defined rules.
+This sets custom claims `{ role: 'admin', admin: true }` and updates
+`users/{uid}` with `role: 'admin'`, `isApproved: true`. The user must sign out and
+back in for the new claims to take effect.
 
-### Verify Permissions
-
-```bash
-APPWRITE_API_KEY=your_api_key npm run check:permissions
-```
-
-## 4. Create Admin User
-
-### Option A: Using Script (Recommended)
-
-```bash
-APPWRITE_API_KEY=your_api_key npm run create:admin
-```
-
-Follow the prompts to enter:
-- Name
-- Email
-- Password (min 8 characters)
-
-The script will:
-- Create the user account
-- Add `admin` label
-- Mark email as verified
-
-### Option B: Manual Creation
-
-1. Go to Appwrite Console → Auth → Users
-2. Click "Create User"
-3. Enter email, password, and name
-4. After creation, click the user to edit
-5. Add label: `admin`
-6. MarkEmail as verified
-
-## 5. Start Admin Panel
+## 4. Run
 
 ```bash
 npm run dev
 ```
 
-Access at: http://localhost:3000
+Open http://localhost:3000 and sign in with the admin account.
 
-## 6. Login
+## Deployment (Vercel)
 
-Use the admin credentials created in step 4.
-
-The admin panel will:
-- ✅ Verify `admin` label on login
-- ✅ Reject non-admin users
-- ✅ Provide access to all admin features
+1. Import the repository.
+2. Add `FIREBASE_SERVICE_ACCOUNT` as an environment variable.
+3. Add the deployed domain under Firebase Console → Authentication → Settings → **Authorized domains**.
 
 ## Troubleshooting
 
-### "Access denied. Admin privileges required"
-
-**Cause**: User account doesn't have the `admin` label.
-
-**Solution**:
-1. Go to Appwrite Console
-2. Navigate to Auth → Users
-3. Find the user account
-4. Edit and add label: `admin`
-
-### "Collection not found" in permission setup
-
-**Cause**: Collection doesn't exist in the database yet.
-
-**Solution**: 
-- Collections are created by CRADI Mobile app
-- Ensure CRADI Mobile has run at least once
-- Or skip missing collections (script will continue)
-
-### Permission script errors
-
-**Cause**: Invalid or insufficient API key permissions.
-
-**Solution**:
-- Verify API key has `databases.write` and `users.write` scopes
-- Create new API key with all required permissions
-
-## Security Notes
-
-> [!WARNING]
-> **API Key Security**
-> 
-> - Never commit API keys to version control
-> - Use environment variables for API keys
-> - Revoke API keys when no longer needed
-
-> [!IMPORTANT]
-> **Admin Label Protection**
-> 
-> - Admin labels can only be set via Appwrite Console or Server SDK
-> - Client applications (mobile app) cannot add admin labels
-> - This prevents privilege escalation attacks
-
-## Next Steps
-
-After setup:
-1. Test login with admin credentials
-2. Verify dashboard loads with statistics
-3. Test user management features
-4. Test report verification workflow
-5. Review walkthrough document for usage guide
+- **"Access denied. This account does not have admin privileges."** – run `set:admin`
+  for that email, then sign in again.
+- **Permission denied reading data** – the Firestore rules check the ID-token claims;
+  make sure the account has `role: 'admin'` in its claims (set by `set:admin`).
+- **"Server not configured"** – set `FIREBASE_SERVICE_ACCOUNT` or `GOOGLE_APPLICATION_CREDENTIALS`.
