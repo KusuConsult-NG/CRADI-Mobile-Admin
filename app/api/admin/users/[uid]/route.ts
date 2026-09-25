@@ -1,64 +1,49 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { adminAuth, adminDb, firebaseErrorCode, jsonError, requireAdmin } from '@/lib/firebase-admin';
+import { jsonError, requireAdmin } from '@/lib/supabase-admin';
+import { isUserRole, TABLES, type UserRole } from '@/lib/constants';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const VALID_ROLES = new Set([
-    'user',
-    'ewm',
-    'ewv',
-    'ewr',
-    'ldp_coordinator',
-    'project_staff',
-    'admin',
-    'techSupport',
-]);
+// Effectively permanent ban (100 years), as used for blocked accounts.
+const BAN_DURATION = '876000h';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type RouteContext = { params: Promise<{ uid: string }> };
 
-interface PatchBody {
-    emailVerified?: boolean;
-    disabled?: boolean;
-    role?: string;
-}
+type PatchBody = { approve: true } | { disabled: boolean } | { role: UserRole };
 
+/** Accepts exactly one of `approve: true`, `disabled: boolean` or `role: <UserRole>`. */
 function parsePatchBody(value: unknown): PatchBody | null {
     if (typeof value !== 'object' || value === null) return null;
     const v = value as Record<string, unknown>;
-    const body: PatchBody = {};
-    if ('emailVerified' in v) {
-        if (typeof v.emailVerified !== 'boolean') return null;
-        body.emailVerified = v.emailVerified;
-    }
-    if ('disabled' in v) {
-        if (typeof v.disabled !== 'boolean') return null;
-        body.disabled = v.disabled;
-    }
-    if ('role' in v) {
-        if (typeof v.role !== 'string' || !VALID_ROLES.has(v.role)) return null;
-        body.role = v.role;
-    }
-    if (Object.keys(body).length === 0) return null;
-    return body;
+    const keys = Object.keys(v);
+    if (keys.length !== 1) return null;
+    if (v.approve === true) return { approve: true };
+    if (typeof v.disabled === 'boolean') return { disabled: v.disabled };
+    if (isUserRole(v.role)) return { role: v.role };
+    return null;
 }
 
-function isValidUid(uid: string): boolean {
-    return uid.length > 0 && uid.length <= 128 && !uid.includes('/');
+function isNotFound(error: { status?: number; code?: string } | null): boolean {
+    return !!error && (error.status === 404 || error.code === 'user_not_found');
 }
 
 /**
- * Updates the Firebase Auth side of a user:
- *  - emailVerified: mark the email verified (used when approving)
- *  - disabled: disable/enable sign-in (block/unblock); revokes sessions when disabling
- *  - role: set custom claims {role, admin} used by Firestore rules, and mirror to users/{uid}.role
+ * Admin-only user operations. All user mutations go through this route so the
+ * profile row and the Supabase Auth account stay in sync:
+ *  - { approve: true }     → profiles.is_approved = true (+ is_verified) and confirm the email
+ *  - { disabled: boolean } → profiles.is_disabled and ban / unban the Auth account
+ *  - { role }              → profiles.role
  */
 export async function PATCH(req: NextRequest, ctx: RouteContext) {
     const check = await requireAdmin(req);
     if (!check.ok) return check.response;
+    const { admin, callerId } = check;
 
     const { uid } = await ctx.params;
-    if (!isValidUid(uid)) return jsonError('Invalid user id', 400);
+    if (!UUID_RE.test(uid)) return jsonError('Invalid user id', 400);
 
     let body: PatchBody | null;
     try {
@@ -68,62 +53,64 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
     }
     if (!body) return jsonError('Invalid request body', 400);
 
-    if (uid === check.token.uid && (body.disabled === true || (body.role && body.role !== 'admin'))) {
+    if (uid === callerId && (('disabled' in body && body.disabled) || ('role' in body && body.role !== 'admin'))) {
         return jsonError('You cannot block or demote your own admin account', 400);
     }
 
     try {
-        const auth = adminAuth();
+        const profileUpdate: Record<string, unknown> =
+            'approve' in body
+                ? { is_approved: true, is_verified: true }
+                : 'disabled' in body
+                  ? { is_disabled: body.disabled }
+                  : { role: body.role };
 
-        const update: { emailVerified?: boolean; disabled?: boolean } = {};
-        if (body.emailVerified !== undefined) update.emailVerified = body.emailVerified;
-        if (body.disabled !== undefined) update.disabled = body.disabled;
-        if (Object.keys(update).length > 0) {
-            await auth.updateUser(uid, update);
-        }
-        if (body.disabled === true) {
-            await auth.revokeRefreshTokens(uid);
-        }
+        const { data: updated, error: profileError } = await admin
+            .from(TABLES.PROFILES)
+            .update(profileUpdate)
+            .eq('id', uid)
+            .select('id');
+        if (profileError) throw profileError;
+        if (!updated || updated.length === 0) return jsonError('User not found', 404);
 
-        if (body.role) {
-            const existing = (await auth.getUser(uid)).customClaims ?? {};
-            await auth.setCustomUserClaims(uid, {
-                ...existing,
-                role: body.role,
-                admin: body.role === 'admin',
+        if ('approve' in body) {
+            const { error } = await admin.auth.admin.updateUserById(uid, { email_confirm: true });
+            if (error && !isNotFound(error)) throw error;
+        } else if ('disabled' in body) {
+            const { error } = await admin.auth.admin.updateUserById(uid, {
+                ban_duration: body.disabled ? BAN_DURATION : 'none',
             });
-            await adminDb().collection('users').doc(uid).set({ role: body.role }, { merge: true });
+            if (error) {
+                if (isNotFound(error)) return jsonError('User not found', 404);
+                throw error;
+            }
         }
 
         return NextResponse.json({ success: true });
     } catch (error) {
-        if (firebaseErrorCode(error) === 'auth/user-not-found') {
-            return jsonError('No Firebase Auth account exists for this user', 404);
-        }
         console.error('[api/admin/users] PATCH failed:', error);
         return jsonError('Failed to update user', 500);
     }
 }
 
-/** Deletes the Firebase Auth account and the users/{uid} Firestore document. */
+/** Deletes the Supabase Auth account; the profile row is removed by ON DELETE CASCADE. */
 export async function DELETE(req: NextRequest, ctx: RouteContext) {
     const check = await requireAdmin(req);
     if (!check.ok) return check.response;
+    const { admin, callerId } = check;
 
     const { uid } = await ctx.params;
-    if (!isValidUid(uid)) return jsonError('Invalid user id', 400);
-    if (uid === check.token.uid) {
+    if (!UUID_RE.test(uid)) return jsonError('Invalid user id', 400);
+    if (uid === callerId) {
         return jsonError('You cannot delete your own admin account', 400);
     }
 
     try {
-        try {
-            await adminAuth().deleteUser(uid);
-        } catch (error) {
-            // A Firestore profile without an Auth account can still be removed.
-            if (firebaseErrorCode(error) !== 'auth/user-not-found') throw error;
+        const { error } = await admin.auth.admin.deleteUser(uid);
+        if (error) {
+            if (isNotFound(error)) return jsonError('User not found', 404);
+            throw error;
         }
-        await adminDb().collection('users').doc(uid).delete();
         return NextResponse.json({ success: true });
     } catch (error) {
         console.error('[api/admin/users] DELETE failed:', error);

@@ -44,6 +44,6 @@ next-env.d.ts
 # Scripts with embedded credentials
 /scripts/create-default-admin.js
 
-# Firebase service account keys
+# Credential files
 *service-account*.json
 *serviceAccount*.json

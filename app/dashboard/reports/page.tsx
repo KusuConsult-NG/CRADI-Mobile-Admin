@@ -1,30 +1,24 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
+import { getSupabase, publicImageUrl } from '@/lib/supabase';
 import {
-    collection,
-    doc,
-    getCountFromServer,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    serverTimestamp,
-    startAfter,
-    updateDoc,
-    where,
-    type DocumentData,
-    type QueryConstraint,
-    type QueryDocumentSnapshot,
-} from 'firebase/firestore';
-import { db, COLLECTIONS, REPORT_STATUSES, toDate, type ReportStatus } from '@/lib/firebase';
-import { AlertTriangle, Loader2, Search, ArrowLeft, MapPin, Clock } from 'lucide-react';
+    TABLES,
+    REPORT_IMAGES_BUCKET,
+    REPORT_STATUSES,
+    capitalize,
+    sanitizeSearch,
+    toDate,
+    type ReportStatus,
+} from '@/lib/constants';
+import Pagination from '@/components/Pagination';
+import { AlertTriangle, Loader2, Search, ArrowLeft, MapPin, Clock, User } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 
-const PAGE_SIZE = 25;
+const PAGE_SIZE = 20;
 
 type StatusFilter = 'all' | ReportStatus;
 
@@ -38,43 +32,72 @@ interface Report {
     lga?: string;
     state?: string;
     status: string;
-    userId?: string;
+    reporterName?: string;
     submittedAt: Date | null;
     imageUrls: string[];
     isAlert: boolean;
+    escalated: boolean;
     verificationCount: number;
 }
+
+interface ReportRow {
+    id: string;
+    hazard_type: string | null;
+    type: string | null;
+    severity: string | null;
+    description: string | null;
+    location_details: string | null;
+    location: string | null;
+    address: string | null;
+    ward: string | null;
+    lga: string | null;
+    state: string | null;
+    status: string | null;
+    reporter_name: string | null;
+    submitted_at: string | null;
+    created_at: string | null;
+    image_urls: string[] | null;
+    is_alert: boolean | null;
+    escalated: boolean | null;
+    verification_count: number | null;
+}
+
+const REPORT_COLUMNS =
+    'id, hazard_type, type, severity, description, location_details, location, address, ward, lga, state, status, reporter_name, submitted_at, created_at, image_urls, is_alert, escalated, verification_count';
 
 function str(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-function toReport(snap: QueryDocumentSnapshot<DocumentData>): Report {
-    const d = snap.data();
-    const imageUrls = Array.isArray(d.imageUrls)
-        ? d.imageUrls.filter((u: unknown): u is string => typeof u === 'string' && u.startsWith('http'))
-        : [];
+function toReport(row: ReportRow): Report {
+    const imageUrls = (Array.isArray(row.image_urls) ? row.image_urls : [])
+        .map((v) => (typeof v === 'string' ? publicImageUrl(REPORT_IMAGES_BUCKET, v) : null))
+        .filter((u): u is string => !!u);
     return {
-        id: snap.id,
-        hazardType: str(d.hazardType) ?? str(d.type) ?? 'Unknown hazard',
-        severity: str(d.severity),
-        description: str(d.description),
-        location: str(d.locationDetails) ?? str(d.location) ?? str(d.address),
-        ward: str(d.ward),
-        lga: str(d.lga),
-        state: str(d.state),
-        status: str(d.status) ?? 'pending',
-        userId: str(d.userId),
-        submittedAt: toDate(d.submittedAt ?? d.createdAt),
+        id: row.id,
+        hazardType: str(row.hazard_type) ?? str(row.type) ?? 'Unknown hazard',
+        severity: str(row.severity),
+        description: str(row.description),
+        location: str(row.location_details) ?? str(row.location) ?? str(row.address),
+        ward: str(row.ward),
+        lga: str(row.lga),
+        state: str(row.state),
+        status: str(row.status) ?? 'pending',
+        reporterName: str(row.reporter_name),
+        submittedAt: toDate(row.submitted_at ?? row.created_at),
         imageUrls,
-        isAlert: d.isAlert === true,
-        verificationCount: typeof d.verificationCount === 'number' ? d.verificationCount : 0,
+        isAlert: row.is_alert === true,
+        escalated: row.escalated === true,
+        verificationCount: typeof row.verification_count === 'number' ? row.verification_count : 0,
     };
 }
 
-function capitalize(value: string): string {
-    return value.charAt(0).toUpperCase() + value.slice(1);
-}
+/** Timestamp columns stamped when an admin moves a report into a status. */
+const STATUS_TIMESTAMP: Partial<Record<ReportStatus, string>> = {
+    approved: 'approved_at',
+    rejected: 'rejected_at',
+    verified: 'verified_at',
+};
 
 const getSeverityColor = (severity?: string) => {
     switch (severity?.toLowerCase()) {
@@ -121,75 +144,87 @@ export default function ReportsPage() {
     const [reports, setReports] = useState<Report[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
-    const [loadingMore, setLoadingMore] = useState(false);
-    const [hasMore, setHasMore] = useState(false);
-    const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+    const [page, setPage] = useState(0);
+    const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    const [reloadKey, setReloadKey] = useState(0);
     const [updatingId, setUpdatingId] = useState<string | null>(null);
 
-    const fetchReports = useCallback(async (filter: StatusFilter, append: boolean) => {
-        const reportsRef = collection(db, COLLECTIONS.REPORTS);
-        const filters: QueryConstraint[] = filter === 'all' ? [] : [where('status', '==', filter)];
-        const cursor = append ? lastDocRef.current : null;
-        const q = query(
-            reportsRef,
-            ...filters,
-            orderBy('submittedAt', 'desc'),
-            ...(cursor ? [startAfter(cursor)] : []),
-            limit(PAGE_SIZE),
-        );
-
-        if (append) setLoadingMore(true);
-        else setLoading(true);
-
-        try {
-            const [snapshot, count] = await Promise.all([
-                getDocs(q),
-                append
-                    ? Promise.resolve(null)
-                    : getCountFromServer(query(reportsRef, ...filters))
-                        .then((c) => c.data().count)
-                        .catch(() => null),
-            ]);
-            const page = snapshot.docs.map(toReport);
-            lastDocRef.current = snapshot.docs[snapshot.docs.length - 1] ?? lastDocRef.current;
-            setHasMore(snapshot.docs.length === PAGE_SIZE);
-            setReports((prev) => (append ? [...prev, ...page] : page));
-            if (!append) setTotalCount(count);
-        } catch (error) {
-            console.error('Error fetching reports:', error);
-            toast.error('Failed to load reports.');
-            if (!append) setReports([]);
-        } finally {
-            setLoading(false);
-            setLoadingMore(false);
-        }
-    }, []);
+    // Debounce the search box; a new search starts again at the first page.
+    useEffect(() => {
+        const next = sanitizeSearch(searchInput);
+        if (next === searchQuery) return;
+        const handle = setTimeout(() => {
+            setSearchQuery(next);
+            setPage(0);
+        }, 350);
+        return () => clearTimeout(handle);
+    }, [searchInput, searchQuery]);
 
     useEffect(() => {
         if (!authLoading && !user) {
             router.push('/login');
-        } else if (user) {
-            lastDocRef.current = null;
-            void fetchReports(statusFilter, false);
+            return;
         }
-    }, [user, authLoading, router, statusFilter, fetchReports]);
+        if (!user) return;
+
+        let cancelled = false;
+        async function load() {
+            setLoading(true);
+            let query = getSupabase()
+                .from(TABLES.REPORTS)
+                .select(REPORT_COLUMNS, { count: 'exact' })
+                .order('submitted_at', { ascending: false })
+                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            if (statusFilter !== 'all') query = query.eq('status', statusFilter);
+            if (searchQuery) {
+                const p = `*${searchQuery}*`;
+                query = query.or(
+                    `hazard_type.ilike.${p},description.ilike.${p},location_details.ilike.${p},ward.ilike.${p},lga.ilike.${p},state.ilike.${p},reporter_name.ilike.${p}`,
+                );
+            }
+            const { data, count, error } = await query;
+            if (cancelled) return;
+            if (error) {
+                console.error('Error fetching reports:', error);
+                toast.error('Failed to load reports.');
+                setReports([]);
+                setTotalCount(null);
+            } else {
+                setReports(((data ?? []) as ReportRow[]).map(toReport));
+                setTotalCount(count ?? null);
+            }
+            setLoading(false);
+        }
+        void load();
+        return () => {
+            cancelled = true;
+        };
+    }, [user, authLoading, router, page, statusFilter, searchQuery, reloadKey]);
 
     async function updateReportStatus(report: Report, newStatus: ReportStatus) {
-        if (updatingId) return;
+        if (updatingId || !user) return;
         setUpdatingId(report.id);
         try {
-            await updateDoc(doc(db, COLLECTIONS.REPORTS, report.id), {
-                status: newStatus,
-                updatedAt: serverTimestamp(),
-                updatedBy: 'admin',
-            });
+            const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
+            const stampColumn = STATUS_TIMESTAMP[newStatus];
+            if (stampColumn) update[stampColumn] = new Date().toISOString();
+
+            const { data, error } = await getSupabase()
+                .from(TABLES.REPORTS)
+                .update(update)
+                .eq('id', report.id)
+                .select('id');
+            if (error) throw error;
+            // RLS filters rows silently: no row back means the update was not allowed.
+            if (!data || data.length === 0) throw new Error('Report not found or not permitted');
+
             toast.success(`Report marked as ${newStatus}`);
             if (statusFilter !== 'all' && statusFilter !== newStatus) {
-                // No longer matches the active filter.
-                setReports((prev) => prev.filter((r) => r.id !== report.id));
-                setTotalCount((prev) => (prev === null ? prev : Math.max(0, prev - 1)));
+                // No longer matches the active filter: reload the current page.
+                if (reports.length === 1 && page > 0) setPage((p) => p - 1);
+                else setReloadKey((k) => k + 1);
             } else {
                 setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, status: newStatus } : r)));
             }
@@ -200,16 +235,6 @@ export default function ReportsPage() {
             setUpdatingId(null);
         }
     }
-
-    const filteredReports = useMemo(() => {
-        const q = searchQuery.trim().toLowerCase();
-        if (!q) return reports;
-        return reports.filter((r) =>
-            [r.hazardType, r.description, r.location, r.ward, r.lga, r.state].some((v) =>
-                v?.toLowerCase().includes(q)
-            )
-        );
-    }, [reports, searchQuery]);
 
     if (authLoading || !user) {
         return (
@@ -250,16 +275,19 @@ export default function ReportsPage() {
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                         <input
                             type="text"
-                            placeholder="Search loaded reports by hazard, description or location..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search by hazard, description, location or reporter..."
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
                             className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
 
                     <select
                         value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value as StatusFilter)}
+                        onChange={(e) => {
+                            setStatusFilter(e.target.value as StatusFilter);
+                            setPage(0);
+                        }}
                         className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         <option value="all">All Status</option>
@@ -278,13 +306,13 @@ export default function ReportsPage() {
                     </div>
                 ) : (
                     <div className="space-y-4">
-                        {filteredReports.length === 0 ? (
+                        {reports.length === 0 ? (
                             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
                                 <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                                 <p className="text-gray-500">No reports found</p>
                             </div>
                         ) : (
-                            filteredReports.map((report) => {
+                            reports.map((report) => {
                                 const place = [report.ward, report.lga, report.state].filter(Boolean).join(', ');
                                 return (
                                     <div
@@ -318,6 +346,11 @@ export default function ReportsPage() {
                                                             Alert
                                                         </span>
                                                     )}
+                                                    {report.escalated && (
+                                                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                                                            Escalated
+                                                        </span>
+                                                    )}
                                                     {report.verificationCount > 0 && (
                                                         <span className="text-xs text-gray-500">
                                                             {report.verificationCount} verification{report.verificationCount === 1 ? '' : 's'}
@@ -334,6 +367,12 @@ export default function ReportsPage() {
                                                             <span>
                                                                 {[report.location, place].filter(Boolean).join(' — ')}
                                                             </span>
+                                                        </div>
+                                                    )}
+                                                    {report.reporterName && (
+                                                        <div className="flex items-center gap-2">
+                                                            <User className="w-4 h-4 flex-shrink-0" />
+                                                            <span>{report.reporterName}</span>
                                                         </div>
                                                     )}
                                                     <div className="flex items-center gap-2">
@@ -353,7 +392,7 @@ export default function ReportsPage() {
                                                                 rel="noopener noreferrer"
                                                                 className="block w-20 h-20 rounded-lg overflow-hidden border border-gray-200 hover:opacity-90 transition-opacity"
                                                             >
-                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Firebase Storage URLs */}
+                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Supabase Storage URLs */}
                                                                 <img
                                                                     src={url}
                                                                     alt={`${report.hazardType} report image ${i + 1}`}
@@ -389,25 +428,19 @@ export default function ReportsPage() {
                             })
                         )}
 
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 px-6 py-4 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                            <p className="text-sm text-gray-600">
-                                {searchQuery.trim()
-                                    ? `${filteredReports.length} match${filteredReports.length === 1 ? '' : 'es'} among ${reports.length} loaded reports`
-                                    : `Showing ${reports.length} loaded report${reports.length === 1 ? '' : 's'}`}
-                                {totalCount !== null &&
-                                    ` (${totalCount.toLocaleString()} ${statusFilter === 'all' ? 'total' : statusFilter})`}
-                            </p>
-                            {hasMore && (
-                                <button
-                                    onClick={() => void fetchReports(statusFilter, true)}
-                                    disabled={loadingMore}
-                                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
-                                >
-                                    {loadingMore && <Loader2 className="w-4 h-4 animate-spin" />}
-                                    Load more
-                                </button>
-                            )}
-                        </div>
+                        {reports.length > 0 && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <Pagination
+                                    page={page}
+                                    pageSize={PAGE_SIZE}
+                                    total={totalCount}
+                                    itemCount={reports.length}
+                                    noun={statusFilter === 'all' ? 'reports' : `${statusFilter} reports`}
+                                    disabled={loading}
+                                    onPageChange={setPage}
+                                />
+                            </div>
+                        )}
                     </div>
                 )}
             </div>

@@ -5,11 +5,11 @@
  * (sanitised) error message when the response is not ok.
  */
 export async function adminApi(
-    getIdToken: () => Promise<string>,
+    getAccessToken: () => Promise<string>,
     path: string,
     init: { method: 'PATCH' | 'DELETE' | 'POST'; body?: unknown },
 ): Promise<void> {
-    const token = await getIdToken();
+    const token = await getAccessToken();
     const res = await fetch(path, {
         method: init.method,
         headers: {

@@ -3,8 +3,8 @@
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { collection, getCountFromServer, query, where, type Query } from 'firebase/firestore';
-import { db, COLLECTIONS } from '@/lib/firebase';
+import { getSupabase } from '@/lib/supabase';
+import { TABLES } from '@/lib/constants';
 import {
     LayoutDashboard,
     Users,
@@ -15,6 +15,7 @@ import {
     Loader2,
     Clock,
     CheckCircle2,
+    Megaphone,
 } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -26,6 +27,7 @@ interface Stats {
     approvedReports: number | null;
     emergencyContacts: number | null;
     knowledgeArticles: number | null;
+    activeAlerts: number | null;
 }
 
 const EMPTY_STATS: Stats = {
@@ -35,11 +37,19 @@ const EMPTY_STATS: Stats = {
     approvedReports: null,
     emergencyContacts: null,
     knowledgeArticles: null,
+    activeAlerts: null,
 };
 
-async function countOf(q: Query): Promise<number> {
-    const snapshot = await getCountFromServer(q);
-    return snapshot.data().count;
+type CountFilter = { column: string; op: 'eq' | 'in'; value: string | boolean | string[] };
+
+/** Exact row count (HEAD request, no rows transferred), subject to RLS. */
+async function countOf(table: string, filter?: CountFilter): Promise<number> {
+    let query = getSupabase().from(table).select('*', { count: 'exact', head: true });
+    if (filter?.op === 'eq') query = query.eq(filter.column, filter.value);
+    if (filter?.op === 'in' && Array.isArray(filter.value)) query = query.in(filter.column, filter.value);
+    const { count, error } = await query;
+    if (error) throw error;
+    return count ?? 0;
 }
 
 const STAT_KEYS: (keyof Stats)[] = [
@@ -49,18 +59,19 @@ const STAT_KEYS: (keyof Stats)[] = [
     'approvedReports',
     'emergencyContacts',
     'knowledgeArticles',
+    'activeAlerts',
 ];
 
 /** Loads each count independently so one failure doesn't blank the others. */
 async function loadStats(): Promise<{ stats: Stats; failures: number; total: number }> {
-    const reports = collection(db, COLLECTIONS.REPORTS);
     const results = await Promise.allSettled([
-        countOf(collection(db, COLLECTIONS.USERS)),
-        countOf(reports),
-        countOf(query(reports, where('status', '==', 'pending'))),
-        countOf(query(reports, where('status', 'in', ['approved', 'verified']))),
-        countOf(collection(db, COLLECTIONS.CONTACTS)),
-        countOf(collection(db, COLLECTIONS.KNOWLEDGE_BASE)),
+        countOf(TABLES.PROFILES),
+        countOf(TABLES.REPORTS),
+        countOf(TABLES.REPORTS, { column: 'status', op: 'eq', value: 'pending' }),
+        countOf(TABLES.REPORTS, { column: 'status', op: 'in', value: ['approved', 'verified'] }),
+        countOf(TABLES.CONTACTS),
+        countOf(TABLES.KNOWLEDGE_BASE),
+        countOf(TABLES.ALERTS, { column: 'is_active', op: 'eq', value: true }),
     ]);
 
     const stats: Stats = { ...EMPTY_STATS };
@@ -132,7 +143,7 @@ export default function DashboardPage() {
 
                     <div className="flex items-center gap-4">
                         <div className="text-right">
-                            <p className="text-sm font-medium text-gray-900">{user.displayName || user.email}</p>
+                            <p className="text-sm font-medium text-gray-900">{user.name || user.email}</p>
                             <p className="text-xs text-gray-500">Administrator</p>
                         </div>
                         <button
@@ -150,7 +161,7 @@ export default function DashboardPage() {
                 {/* Welcome Section */}
                 <div className="mb-8">
                     <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                        Welcome back, {user.displayName || 'Admin'}!
+                        Welcome back, {user.name || 'Admin'}!
                     </h2>
                     <p className="text-gray-600">
                         Here&apos;s an overview of the CRADI system status and recent activity.
@@ -234,6 +245,17 @@ export default function DashboardPage() {
                                 </h3>
                                 <p className="text-gray-600 text-sm">Knowledge Articles</p>
                             </div>
+
+                            {/* Active Alerts */}
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="w-12 h-12 bg-rose-100 rounded-lg flex items-center justify-center">
+                                        <Megaphone className="w-6 h-6 text-rose-600" />
+                                    </div>
+                                </div>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.activeAlerts)}</h3>
+                                <p className="text-gray-600 text-sm">Active Alerts</p>
+                            </div>
                         </div>
 
                         {/* Quick Actions */}
@@ -260,7 +282,6 @@ export default function DashboardPage() {
                                     </span>
                                 </Link>
 
-
                                 <Link
                                     href="/dashboard/knowledge"
                                     className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all group"
@@ -268,6 +289,16 @@ export default function DashboardPage() {
                                     <BookOpen className="w-5 h-5 text-gray-600 group-hover:text-indigo-600" />
                                     <span className="font-medium text-gray-700 group-hover:text-indigo-700">
                                         Knowledge Base
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/alerts"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-rose-500 hover:bg-rose-50 transition-all group"
+                                >
+                                    <Megaphone className="w-5 h-5 text-gray-600 group-hover:text-rose-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-rose-700">
+                                        Community Alerts
                                     </span>
                                 </Link>
                             </div>

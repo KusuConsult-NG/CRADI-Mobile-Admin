@@ -1,29 +1,16 @@
-import { getApp, getApps, initializeApp, type FirebaseApp, type FirebaseOptions } from 'firebase/app';
-import { getAuth, type Auth } from 'firebase/auth';
-import { getFirestore, type Firestore } from 'firebase/firestore';
+// Shared constants and helpers (safe for both client and server code).
+// Values mirror the check constraints in the Supabase schema
+// (CRADI-mobile/supabase/migrations/20260925000000_init.sql).
 
-// Public Firebase web config for project `ewer-8f788` (same project as the
-// CRADI mobile app). These values are not secrets; access is enforced by
-// Firebase Auth + Firestore security rules. Env vars can override them.
-const firebaseConfig: FirebaseOptions = {
-    apiKey: process.env.NEXT_PUBLIC_FIREBASE_API_KEY || 'AIzaSyBLBBkjPb8zMACJWHpzKTiUpGjnaJMnZ4k',
-    appId: process.env.NEXT_PUBLIC_FIREBASE_APP_ID || '1:689251502200:web:1697afa7d602215e7e458d',
-    messagingSenderId: process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '689251502200',
-    projectId: process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID || 'ewer-8f788',
-    authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || 'ewer-8f788.firebaseapp.com',
-    storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || 'ewer-8f788.firebasestorage.app',
-};
-
-export const app: FirebaseApp = getApps().length ? getApp() : initializeApp(firebaseConfig);
-export const auth: Auth = getAuth(app);
-export const db: Firestore = getFirestore(app);
-
-export const COLLECTIONS = {
-    USERS: 'users',
+export const TABLES = {
+    PROFILES: 'profiles',
     REPORTS: 'reports',
     KNOWLEDGE_BASE: 'knowledge_base',
     CONTACTS: 'contacts',
+    ALERTS: 'alerts',
 } as const;
+
+export const REPORT_IMAGES_BUCKET = 'report-images';
 
 export const USER_ROLES = [
     'user',
@@ -36,6 +23,10 @@ export const USER_ROLES = [
     'techSupport',
 ] as const;
 export type UserRole = (typeof USER_ROLES)[number];
+
+export function isUserRole(value: unknown): value is UserRole {
+    return typeof value === 'string' && (USER_ROLES as readonly string[]).includes(value);
+}
 
 export const ROLE_LABELS: Record<UserRole, string> = {
     user: 'User',
@@ -50,6 +41,9 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 
 export const REPORT_STATUSES = ['pending', 'verified', 'approved', 'rejected'] as const;
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
+
+export const ALERT_SEVERITIES = ['info', 'warning', 'critical'] as const;
+export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
 
 export const KNOWLEDGE_CATEGORIES = [
     'Flood',
@@ -70,7 +64,7 @@ export function errorMessage(error: unknown, fallback = 'Something went wrong'):
     return fallback;
 }
 
-/** Firestore stores dates either as ISO strings (mobile app) or Timestamps. */
+/** Parses a timestamptz string (or Date) into a Date, or null. */
 export function toDate(value: unknown): Date | null {
     if (!value) return null;
     if (value instanceof Date) return value;
@@ -78,9 +72,17 @@ export function toDate(value: unknown): Date | null {
         const d = new Date(value);
         return Number.isNaN(d.getTime()) ? null : d;
     }
-    if (typeof value === 'object' && value !== null && 'toDate' in value) {
-        const fn = (value as { toDate: unknown }).toDate;
-        if (typeof fn === 'function') return (fn as () => Date).call(value);
-    }
     return null;
+}
+
+/**
+ * Makes user input safe to embed in a PostgREST `or=(...)` / `ilike` filter by
+ * removing characters that have syntactic meaning there.
+ */
+export function sanitizeSearch(value: string): string {
+    return value.replace(/[%*,()\\"']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+}
+
+export function capitalize(value: string): string {
+    return value.charAt(0).toUpperCase() + value.slice(1);
 }

@@ -1,36 +1,22 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
+import { getSupabase } from '@/lib/supabase';
 import {
-    addDoc,
-    collection,
-    deleteDoc,
-    doc,
-    getCountFromServer,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    serverTimestamp,
-    startAfter,
-    updateDoc,
-    type DocumentData,
-    type QueryDocumentSnapshot,
-} from 'firebase/firestore';
-import {
-    db,
-    COLLECTIONS,
+    TABLES,
     KNOWLEDGE_CATEGORIES,
+    sanitizeSearch,
     toDate,
     type KnowledgeCategory,
-} from '@/lib/firebase';
+} from '@/lib/constants';
+import Pagination from '@/components/Pagination';
 import { BookOpen, Loader2, Search, ArrowLeft, Plus, Trash2, Edit } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 24;
 
 interface KnowledgeArticle {
     id: string;
@@ -39,32 +25,48 @@ interface KnowledgeArticle {
     source: string;
     category: string;
     hazardType?: string;
+    imageUrl: string;
     updatedAt: Date | null;
 }
+
+interface KnowledgeRow {
+    id: string;
+    title: string | null;
+    content: string | null;
+    source: string | null;
+    category: string | null;
+    hazard_type: string | null;
+    image_url: string | null;
+    updated_at: string | null;
+    created_at: string | null;
+}
+
+const KB_COLUMNS = 'id, title, content, source, category, hazard_type, image_url, updated_at, created_at';
 
 interface ArticleForm {
     title: string;
     category: KnowledgeCategory;
     source: string;
+    imageUrl: string;
     content: string;
 }
 
-const EMPTY_FORM: ArticleForm = { title: '', category: 'General', source: '', content: '' };
+const EMPTY_FORM: ArticleForm = { title: '', category: 'General', source: '', imageUrl: '', content: '' };
 
 function str(value: unknown): string {
     return typeof value === 'string' ? value : '';
 }
 
-function toArticle(snap: QueryDocumentSnapshot<DocumentData>): KnowledgeArticle {
-    const d = snap.data();
+function toArticle(row: KnowledgeRow): KnowledgeArticle {
     return {
-        id: snap.id,
-        title: str(d.title) || 'Untitled',
-        content: str(d.content),
-        source: str(d.source),
-        category: str(d.category),
-        hazardType: str(d.hazardType) || undefined,
-        updatedAt: toDate(d.updatedAt ?? d.createdAt),
+        id: row.id,
+        title: str(row.title) || 'Untitled',
+        content: str(row.content),
+        source: str(row.source),
+        category: str(row.category),
+        hazardType: str(row.hazard_type) || undefined,
+        imageUrl: str(row.image_url),
+        updatedAt: toDate(row.updated_at ?? row.created_at),
     };
 }
 
@@ -85,52 +87,64 @@ export default function KnowledgePage() {
     const [articles, setArticles] = useState<KnowledgeArticle[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
-    const [loadingMore, setLoadingMore] = useState(false);
-    const [hasMore, setHasMore] = useState(false);
-    const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+    const [page, setPage] = useState(0);
+    const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
+    const [reloadKey, setReloadKey] = useState(0);
 
     const [editor, setEditor] = useState<{ id: string | null; form: ArticleForm } | null>(null);
     const [saving, setSaving] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<KnowledgeArticle | null>(null);
     const [deleting, setDeleting] = useState(false);
 
-    const fetchArticles = useCallback(async (append: boolean) => {
-        const kbRef = collection(db, COLLECTIONS.KNOWLEDGE_BASE);
-        const cursor = append ? lastDocRef.current : null;
-        const q = cursor
-            ? query(kbRef, orderBy('updatedAt', 'desc'), startAfter(cursor), limit(PAGE_SIZE))
-            : query(kbRef, orderBy('updatedAt', 'desc'), limit(PAGE_SIZE));
-
-        if (append) setLoadingMore(true);
-        else setLoading(true);
-
-        try {
-            const [snapshot, count] = await Promise.all([
-                getDocs(q),
-                append ? Promise.resolve(null) : getCountFromServer(kbRef).then((c) => c.data().count).catch(() => null),
-            ]);
-            const page = snapshot.docs.map(toArticle);
-            lastDocRef.current = snapshot.docs[snapshot.docs.length - 1] ?? lastDocRef.current;
-            setHasMore(snapshot.docs.length === PAGE_SIZE);
-            setArticles((prev) => (append ? [...prev, ...page] : page));
-            if (!append) setTotalCount(count);
-        } catch (error) {
-            console.error('Error fetching knowledge articles:', error);
-            toast.error('Failed to load knowledge articles.');
-        } finally {
-            setLoading(false);
-            setLoadingMore(false);
-        }
-    }, []);
+    // Debounce the search box; a new search starts again at the first page.
+    useEffect(() => {
+        const next = sanitizeSearch(searchInput);
+        if (next === searchQuery) return;
+        const handle = setTimeout(() => {
+            setSearchQuery(next);
+            setPage(0);
+        }, 350);
+        return () => clearTimeout(handle);
+    }, [searchInput, searchQuery]);
 
     useEffect(() => {
         if (!authLoading && !user) {
             router.push('/login');
-        } else if (user) {
-            void fetchArticles(false);
+            return;
         }
-    }, [user, authLoading, router, fetchArticles]);
+        if (!user) return;
+
+        let cancelled = false;
+        async function load() {
+            setLoading(true);
+            let query = getSupabase()
+                .from(TABLES.KNOWLEDGE_BASE)
+                .select(KB_COLUMNS, { count: 'exact' })
+                .order('updated_at', { ascending: false })
+                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            if (searchQuery) {
+                const p = `*${searchQuery}*`;
+                query = query.or(`title.ilike.${p},category.ilike.${p},hazard_type.ilike.${p},source.ilike.${p}`);
+            }
+            const { data, count, error } = await query;
+            if (cancelled) return;
+            if (error) {
+                console.error('Error fetching knowledge articles:', error);
+                toast.error('Failed to load knowledge articles.');
+                setArticles([]);
+                setTotalCount(null);
+            } else {
+                setArticles(((data ?? []) as KnowledgeRow[]).map(toArticle));
+                setTotalCount(count ?? null);
+            }
+            setLoading(false);
+        }
+        void load();
+        return () => {
+            cancelled = true;
+        };
+    }, [user, authLoading, router, page, searchQuery, reloadKey]);
 
     async function saveArticle(e: React.FormEvent) {
         e.preventDefault();
@@ -138,8 +152,13 @@ export default function KnowledgePage() {
         const { id, form } = editor;
         const title = form.title.trim();
         const content = form.content.trim();
+        const imageUrl = form.imageUrl.trim();
         if (!title || !content) {
             toast.error('Title and content are required.');
+            return;
+        }
+        if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
+            toast.error('Image URL must start with https://');
             return;
         }
 
@@ -148,25 +167,23 @@ export default function KnowledgePage() {
             content,
             source: form.source.trim(),
             category: form.category,
-            hazardType: form.category.toLowerCase(),
-            updatedAt: serverTimestamp(),
+            hazard_type: form.category.toLowerCase(),
+            image_url: imageUrl || null,
         };
 
         setSaving(true);
         try {
-            if (id) {
-                await updateDoc(doc(db, COLLECTIONS.KNOWLEDGE_BASE, id), data);
-                toast.success('Article updated');
-            } else {
-                await addDoc(collection(db, COLLECTIONS.KNOWLEDGE_BASE), {
-                    ...data,
-                    createdAt: serverTimestamp(),
-                });
-                toast.success('Article created');
-            }
+            const table = getSupabase().from(TABLES.KNOWLEDGE_BASE);
+            const { data: rows, error } = id
+                ? await table.update(data).eq('id', id).select('id')
+                : await table.insert(data).select('id');
+            if (error) throw error;
+            if (!rows || rows.length === 0) throw new Error('Article not found or not permitted');
+            toast.success(id ? 'Article updated' : 'Article created');
             setEditor(null);
-            lastDocRef.current = null;
-            await fetchArticles(false);
+            // updated_at ordering puts the saved article first.
+            if (page === 0) setReloadKey((k) => k + 1);
+            else setPage(0);
         } catch (error) {
             console.error('Error saving article:', error);
             toast.error('Failed to save article. Please try again.');
@@ -181,10 +198,16 @@ export default function KnowledgePage() {
         setDeleting(true);
         setDeleteTarget(null);
         try {
-            await deleteDoc(doc(db, COLLECTIONS.KNOWLEDGE_BASE, target.id));
-            setArticles((prev) => prev.filter((a) => a.id !== target.id));
-            setTotalCount((prev) => (prev === null ? prev : Math.max(0, prev - 1)));
+            const { data, error } = await getSupabase()
+                .from(TABLES.KNOWLEDGE_BASE)
+                .delete()
+                .eq('id', target.id)
+                .select('id');
+            if (error) throw error;
+            if (!data || data.length === 0) throw new Error('Article not found or not permitted');
             toast.success('Article deleted');
+            if (articles.length === 1 && page > 0) setPage((p) => p - 1);
+            else setReloadKey((k) => k + 1);
         } catch (error) {
             console.error('Error deleting article:', error);
             toast.error('Failed to delete article. Please try again.');
@@ -196,17 +219,6 @@ export default function KnowledgePage() {
     function updateForm<K extends keyof ArticleForm>(key: K, value: ArticleForm[K]) {
         setEditor((prev) => (prev ? { ...prev, form: { ...prev.form, [key]: value } } : prev));
     }
-
-    const filteredArticles = useMemo(() => {
-        const q = searchQuery.trim().toLowerCase();
-        if (!q) return articles;
-        return articles.filter(
-            (article) =>
-                article.title.toLowerCase().includes(q) ||
-                article.category.toLowerCase().includes(q) ||
-                article.hazardType?.toLowerCase().includes(q)
-        );
-    }, [articles, searchQuery]);
 
     if (authLoading || !user) {
         return (
@@ -247,9 +259,9 @@ export default function KnowledgePage() {
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                         <input
                             type="text"
-                            placeholder="Search articles by title, category, or hazard type..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            placeholder="Search articles by title, category, hazard type or source..."
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
                             className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
@@ -269,12 +281,12 @@ export default function KnowledgePage() {
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {filteredArticles.length === 0 ? (
+                        {articles.length === 0 ? (
                             <div className="col-span-full text-center py-12 text-gray-500">
                                 No knowledge articles found
                             </div>
                         ) : (
-                            filteredArticles.map((article) => (
+                            articles.map((article) => (
                                 <div
                                     key={article.id}
                                     className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow flex flex-col"
@@ -318,6 +330,7 @@ export default function KnowledgePage() {
                                                             title: article.title,
                                                             category: matchCategory(article),
                                                             source: article.source,
+                                                            imageUrl: article.imageUrl,
                                                             content: article.content,
                                                         },
                                                     })
@@ -343,25 +356,17 @@ export default function KnowledgePage() {
                     </div>
                 )}
 
-                {/* Footer Stats */}
-                {!loading && (
-                    <div className="mt-8 p-6 bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                        <p className="text-sm text-gray-600">
-                            {searchQuery.trim()
-                                ? `${filteredArticles.length} match${filteredArticles.length === 1 ? '' : 'es'} among ${articles.length} loaded articles`
-                                : `Showing ${articles.length} loaded article${articles.length === 1 ? '' : 's'}`}
-                            {totalCount !== null && ` (${totalCount.toLocaleString()} total)`}
-                        </p>
-                        {hasMore && (
-                            <button
-                                onClick={() => void fetchArticles(true)}
-                                disabled={loadingMore}
-                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
-                            >
-                                {loadingMore && <Loader2 className="w-4 h-4 animate-spin" />}
-                                Load more
-                            </button>
-                        )}
+                {!loading && articles.length > 0 && (
+                    <div className="mt-8 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                        <Pagination
+                            page={page}
+                            pageSize={PAGE_SIZE}
+                            total={totalCount}
+                            itemCount={articles.length}
+                            noun="articles"
+                            disabled={loading}
+                            onPageChange={setPage}
+                        />
                     </div>
                 )}
             </div>
@@ -421,6 +426,19 @@ export default function KnowledgePage() {
                                         className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
                                     />
                                 </div>
+                            </div>
+                            <div>
+                                <label htmlFor="kb-image" className="block text-sm font-medium text-gray-700 mb-1">
+                                    Image URL <span className="text-gray-400 font-normal">(optional)</span>
+                                </label>
+                                <input
+                                    id="kb-image"
+                                    type="url"
+                                    value={editor.form.imageUrl}
+                                    onChange={(e) => updateForm('imageUrl', e.target.value)}
+                                    placeholder="https://..."
+                                    className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
+                                />
                             </div>
                             <div>
                                 <label htmlFor="kb-content" className="block text-sm font-medium text-gray-700 mb-1">

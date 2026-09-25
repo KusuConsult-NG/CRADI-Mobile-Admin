@@ -1,29 +1,35 @@
 'use client';
 
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
+import { getSupabase } from '@/lib/supabase';
 import {
-    collection,
-    doc,
-    documentId,
-    getCountFromServer,
-    getDocs,
-    limit,
-    orderBy,
-    query,
-    startAfter,
-    updateDoc,
-    type DocumentData,
-    type QueryDocumentSnapshot,
-} from 'firebase/firestore';
-import { db, COLLECTIONS, USER_ROLES, ROLE_LABELS, errorMessage, toDate, type UserRole } from '@/lib/firebase';
+    TABLES,
+    USER_ROLES,
+    ROLE_LABELS,
+    errorMessage,
+    isUserRole,
+    sanitizeSearch,
+    toDate,
+    type UserRole,
+} from '@/lib/constants';
 import { adminApi } from '@/lib/admin-api';
+import Pagination from '@/components/Pagination';
 import { Users as UsersIcon, Loader2, Search, ArrowLeft, CheckCircle, Ban, Trash2, UserCog } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
 
-const PAGE_SIZE = 100;
+const PAGE_SIZE = 25;
+
+type StatusFilter = 'all' | 'pending' | 'approved' | 'blocked';
+
+const STATUS_FILTERS: { value: StatusFilter; label: string }[] = [
+    { value: 'all', label: 'All users' },
+    { value: 'pending', label: 'Pending approval' },
+    { value: 'approved', label: 'Approved' },
+    { value: 'blocked', label: 'Blocked' },
+];
 
 interface AppUser {
     id: string;
@@ -35,11 +41,30 @@ interface AppUser {
     state?: string;
     lga?: string;
     ward?: string;
-    isVerified?: boolean;
-    isApproved?: boolean;
-    isDisabled?: boolean;
+    isVerified: boolean;
+    isApproved: boolean;
+    isDisabled: boolean;
     createdAt: Date | null;
 }
+
+interface ProfileRow {
+    id: string;
+    name: string | null;
+    email: string | null;
+    phone: string | null;
+    role: string | null;
+    address: string | null;
+    state: string | null;
+    lga: string | null;
+    ward: string | null;
+    is_verified: boolean | null;
+    is_approved: boolean | null;
+    is_disabled: boolean | null;
+    created_at: string | null;
+}
+
+const PROFILE_COLUMNS =
+    'id, name, email, phone, role, address, state, lga, ward, is_verified, is_approved, is_disabled, created_at';
 
 interface ConfirmState {
     isOpen: boolean;
@@ -61,27 +86,22 @@ function str(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
-function toAppUser(snap: QueryDocumentSnapshot<DocumentData>): AppUser {
-    const d = snap.data();
+function toAppUser(row: ProfileRow): AppUser {
     return {
-        id: snap.id,
-        name: str(d.name) ?? str(d.fullName),
-        email: str(d.email),
-        phone: str(d.phone) ?? str(d.phoneNumber),
-        role: str(d.role),
-        address: str(d.address),
-        state: str(d.state),
-        lga: str(d.lga),
-        ward: str(d.ward),
-        isVerified: d.isVerified === true,
-        isApproved: d.isApproved === true,
-        isDisabled: d.isDisabled === true,
-        createdAt: toDate(d.createdAt),
+        id: row.id,
+        name: str(row.name),
+        email: str(row.email),
+        phone: str(row.phone),
+        role: str(row.role),
+        address: str(row.address),
+        state: str(row.state),
+        lga: str(row.lga),
+        ward: str(row.ward),
+        isVerified: row.is_verified === true,
+        isApproved: row.is_approved === true,
+        isDisabled: row.is_disabled === true,
+        createdAt: toDate(row.created_at),
     };
-}
-
-function sortByCreatedDesc(list: AppUser[]): AppUser[] {
-    return [...list].sort((a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0));
 }
 
 function formatLocation(u: AppUser): string {
@@ -113,59 +133,72 @@ function StatusBadge({ user }: { user: AppUser }) {
 }
 
 export default function UsersPage() {
-    const { user, loading: authLoading, getIdToken } = useAuth();
+    const { user, loading: authLoading, getAccessToken } = useAuth();
     const router = useRouter();
     const [users, setUsers] = useState<AppUser[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
-    const [loadingMore, setLoadingMore] = useState(false);
-    const [hasMore, setHasMore] = useState(false);
-    const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
+    const [page, setPage] = useState(0);
+    const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
+    const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    const [reloadKey, setReloadKey] = useState(0);
     const [actionLoading, setActionLoading] = useState<string | null>(null);
     const [confirmModal, setConfirmModal] = useState<ConfirmState>(CLOSED_MODAL);
     const [confirmBusy, setConfirmBusy] = useState(false);
     const [roleModal, setRoleModal] = useState<{ user: AppUser; role: UserRole } | null>(null);
 
-    // Users are paged by document id (includes every doc, even ones missing
-    // createdAt, which the mobile app writes inconsistently) and then sorted
-    // client-side by join date.
-    const fetchUsers = useCallback(async (append: boolean) => {
-        const usersRef = collection(db, COLLECTIONS.USERS);
-        const cursor = append ? lastDocRef.current : null;
-        const q = cursor
-            ? query(usersRef, orderBy(documentId()), startAfter(cursor), limit(PAGE_SIZE))
-            : query(usersRef, orderBy(documentId()), limit(PAGE_SIZE));
-
-        if (append) setLoadingMore(true);
-        else setLoading(true);
-
-        try {
-            const [snapshot, count] = await Promise.all([
-                getDocs(q),
-                append ? Promise.resolve(null) : getCountFromServer(usersRef).then((c) => c.data().count).catch(() => null),
-            ]);
-            const page = snapshot.docs.map(toAppUser);
-            lastDocRef.current = snapshot.docs[snapshot.docs.length - 1] ?? lastDocRef.current;
-            setHasMore(snapshot.docs.length === PAGE_SIZE);
-            setUsers((prev) => sortByCreatedDesc(append ? [...prev, ...page] : page));
-            if (!append) setTotalCount(count);
-        } catch (error) {
-            console.error('Error fetching users:', error);
-            toast.error('Failed to load users.');
-        } finally {
-            setLoading(false);
-            setLoadingMore(false);
-        }
-    }, []);
+    // Debounce the search box; a new search starts again at the first page.
+    useEffect(() => {
+        const next = sanitizeSearch(searchInput);
+        if (next === searchQuery) return;
+        const handle = setTimeout(() => {
+            setSearchQuery(next);
+            setPage(0);
+        }, 350);
+        return () => clearTimeout(handle);
+    }, [searchInput, searchQuery]);
 
     useEffect(() => {
         if (!authLoading && !user) {
             router.push('/login');
-        } else if (user) {
-            void fetchUsers(false);
+            return;
         }
-    }, [user, authLoading, router, fetchUsers]);
+        if (!user) return;
+
+        let cancelled = false;
+        async function load() {
+            setLoading(true);
+            let query = getSupabase()
+                .from(TABLES.PROFILES)
+                .select(PROFILE_COLUMNS, { count: 'exact' })
+                .order('created_at', { ascending: false })
+                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            if (statusFilter === 'pending') query = query.eq('is_approved', false).eq('is_disabled', false);
+            if (statusFilter === 'approved') query = query.eq('is_approved', true).eq('is_disabled', false);
+            if (statusFilter === 'blocked') query = query.eq('is_disabled', true);
+            if (searchQuery) {
+                const pattern = `*${searchQuery}*`;
+                query = query.or(`name.ilike.${pattern},email.ilike.${pattern},phone.ilike.${pattern}`);
+            }
+            const { data, count, error } = await query;
+            if (cancelled) return;
+            if (error) {
+                console.error('Error fetching users:', error);
+                toast.error('Failed to load users.');
+                setUsers([]);
+                setTotalCount(null);
+            } else {
+                setUsers(((data ?? []) as ProfileRow[]).map(toAppUser));
+                setTotalCount(count ?? null);
+            }
+            setLoading(false);
+        }
+        void load();
+        return () => {
+            cancelled = true;
+        };
+    }, [user, authLoading, router, page, searchQuery, statusFilter, reloadKey]);
 
     const patchLocalUser = useCallback((id: string, patch: Partial<AppUser>) => {
         setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
@@ -188,35 +221,29 @@ export default function UsersPage() {
         }
     }, [confirmBusy, confirmModal.onConfirm]);
 
+    const userApi = useCallback(
+        (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }) =>
+            adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init),
+        [getAccessToken],
+    );
+
     function handleApproveUser(target: AppUser) {
         setConfirmModal({
             isOpen: true,
             title: 'Approve User',
-            message: `Approve ${target.name || target.email || 'this user'}? They will gain full access to the platform.`,
+            message: `Approve ${target.name || target.email || 'this user'}? Their selected role (${
+                isUserRole(target.role) ? ROLE_LABELS[target.role] : 'User'
+            }) will take effect and they will gain access to the platform.`,
             confirmLabel: 'Approve',
             onConfirm: async () => {
                 setActionLoading(target.id);
                 try {
-                    await updateDoc(doc(db, COLLECTIONS.USERS, target.id), {
-                        isApproved: true,
-                        isVerified: true,
-                    });
+                    await userApi(target.id, { method: 'PATCH', body: { approve: true } });
                     patchLocalUser(target.id, { isApproved: true, isVerified: true });
-                } catch (error) {
-                    console.error('Error approving user:', error);
-                    toast.error('Failed to approve user. Please try again.');
-                    setActionLoading(null);
-                    return;
-                }
-                try {
-                    await adminApi(getIdToken, `/api/admin/users/${encodeURIComponent(target.id)}`, {
-                        method: 'PATCH',
-                        body: { emailVerified: true },
-                    });
                     toast.success('User approved successfully!');
                 } catch (error) {
-                    console.error('Error marking email verified:', error);
-                    toast.error(`User approved, but email verification could not be updated: ${errorMessage(error)}`);
+                    console.error('Error approving user:', error);
+                    toast.error(`Failed to approve user: ${errorMessage(error)}`);
                 } finally {
                     setActionLoading(null);
                 }
@@ -225,39 +252,26 @@ export default function UsersPage() {
     }
 
     function handleBlockUser(target: AppUser) {
-        const currentlyBlocked = target.isDisabled === true;
+        const currentlyBlocked = target.isDisabled;
         const action = currentlyBlocked ? 'unblock' : 'block';
         setConfirmModal({
             isOpen: true,
             title: currentlyBlocked ? 'Unblock User' : 'Block User',
             message: `Are you sure you want to ${action} ${target.name || target.email || 'this user'}? ${currentlyBlocked
                 ? 'They will regain access to the platform.'
-                : 'They will be signed out and lose access to the platform.'
+                : 'They will be unable to sign in and lose access to the platform.'
                 }`,
             isDangerous: !currentlyBlocked,
             confirmLabel: currentlyBlocked ? 'Unblock' : 'Block',
             onConfirm: async () => {
                 setActionLoading(target.id);
                 try {
-                    await updateDoc(doc(db, COLLECTIONS.USERS, target.id), {
-                        isDisabled: !currentlyBlocked,
-                    });
+                    await userApi(target.id, { method: 'PATCH', body: { disabled: !currentlyBlocked } });
                     patchLocalUser(target.id, { isDisabled: !currentlyBlocked });
-                } catch (error) {
-                    console.error(`Error trying to ${action} user:`, error);
-                    toast.error(`Failed to ${action} user. Please try again.`);
-                    setActionLoading(null);
-                    return;
-                }
-                try {
-                    await adminApi(getIdToken, `/api/admin/users/${encodeURIComponent(target.id)}`, {
-                        method: 'PATCH',
-                        body: { disabled: !currentlyBlocked },
-                    });
                     toast.success(`User ${action}ed successfully!`);
                 } catch (error) {
-                    console.error(`Error updating auth account (${action}):`, error);
-                    toast.error(`Profile updated, but the sign-in account could not be ${action}ed: ${errorMessage(error)}`);
+                    console.error(`Error trying to ${action} user:`, error);
+                    toast.error(`Failed to ${action} user: ${errorMessage(error)}`);
                 } finally {
                     setActionLoading(null);
                 }
@@ -275,12 +289,11 @@ export default function UsersPage() {
             onConfirm: async () => {
                 setActionLoading(target.id);
                 try {
-                    await adminApi(getIdToken, `/api/admin/users/${encodeURIComponent(target.id)}`, {
-                        method: 'DELETE',
-                    });
-                    setUsers((prev) => prev.filter((u) => u.id !== target.id));
-                    setTotalCount((prev) => (prev === null ? prev : Math.max(0, prev - 1)));
+                    await userApi(target.id, { method: 'DELETE' });
                     toast.success('User deleted successfully!');
+                    // Reload so the page stays full (or step back if it is now empty).
+                    if (users.length === 1 && page > 0) setPage((p) => p - 1);
+                    else setReloadKey((k) => k + 1);
                 } catch (error) {
                     console.error('Error deleting user:', error);
                     toast.error(`Failed to delete user: ${errorMessage(error)}`);
@@ -298,10 +311,7 @@ export default function UsersPage() {
         if (role === target.role) return;
         setActionLoading(target.id);
         try {
-            await adminApi(getIdToken, `/api/admin/users/${encodeURIComponent(target.id)}`, {
-                method: 'PATCH',
-                body: { role },
-            });
+            await userApi(target.id, { method: 'PATCH', body: { role } });
             patchLocalUser(target.id, { role });
             toast.success(`Role changed to ${ROLE_LABELS[role]}`);
         } catch (error) {
@@ -311,17 +321,6 @@ export default function UsersPage() {
             setActionLoading(null);
         }
     }
-
-    const filteredUsers = useMemo(() => {
-        const q = searchQuery.trim().toLowerCase();
-        if (!q) return users;
-        return users.filter(
-            (u) =>
-                u.name?.toLowerCase().includes(q) ||
-                u.email?.toLowerCase().includes(q) ||
-                u.phone?.toLowerCase().includes(q)
-        );
-    }, [users, searchQuery]);
 
     if (authLoading || !user) {
         return (
@@ -356,18 +355,32 @@ export default function UsersPage() {
             </header>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
-                {/* Search Bar */}
-                <div className="mb-6">
-                    <div className="relative">
+                {/* Search + Filter */}
+                <div className="mb-6 flex flex-col sm:flex-row gap-4">
+                    <div className="relative flex-1">
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                         <input
                             type="text"
                             placeholder="Search by name, email, or phone..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
                             className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
+                    <select
+                        value={statusFilter}
+                        onChange={(e) => {
+                            setStatusFilter(e.target.value as StatusFilter);
+                            setPage(0);
+                        }}
+                        className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                    >
+                        {STATUS_FILTERS.map((f) => (
+                            <option key={f.value} value={f.value}>
+                                {f.label}
+                            </option>
+                        ))}
+                    </select>
                 </div>
 
                 {/* Users Table */}
@@ -405,16 +418,16 @@ export default function UsersPage() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-gray-200">
-                                    {filteredUsers.length === 0 ? (
+                                    {users.length === 0 ? (
                                         <tr>
                                             <td colSpan={7} className="px-6 py-12 text-center text-gray-500">
                                                 No users found
                                             </td>
                                         </tr>
                                     ) : (
-                                        filteredUsers.map((u) => {
+                                        users.map((u) => {
                                             const busy = actionLoading === u.id;
-                                            const isSelf = u.id === user.uid;
+                                            const isSelf = u.id === user.id;
                                             return (
                                                 <tr key={u.id} className="hover:bg-gray-50 transition-colors">
                                                     <td className="px-6 py-4">
@@ -432,9 +445,7 @@ export default function UsersPage() {
                                                         {formatLocation(u)}
                                                     </td>
                                                     <td className="px-6 py-4 text-sm text-gray-700">
-                                                        {u.role && u.role in ROLE_LABELS
-                                                            ? ROLE_LABELS[u.role as UserRole]
-                                                            : u.role || 'User'}
+                                                        {isUserRole(u.role) ? ROLE_LABELS[u.role] : u.role || 'User'}
                                                     </td>
                                                     <td className="px-6 py-4">
                                                         <StatusBadge user={u} />
@@ -449,7 +460,7 @@ export default function UsersPage() {
                                                             </div>
                                                         ) : (
                                                             <div className="flex items-center gap-2">
-                                                                {!u.isApproved && (
+                                                                {!u.isApproved && !u.isDisabled && (
                                                                     <button
                                                                         onClick={() => handleApproveUser(u)}
                                                                         disabled={actionLoading !== null}
@@ -459,43 +470,41 @@ export default function UsersPage() {
                                                                         <CheckCircle className="w-4 h-4" />
                                                                     </button>
                                                                 )}
-                                                                <button
-                                                                    onClick={() =>
-                                                                        setRoleModal({
-                                                                            user: u,
-                                                                            role: (USER_ROLES as readonly string[]).includes(u.role ?? '')
-                                                                                ? (u.role as UserRole)
-                                                                                : 'user',
-                                                                        })
-                                                                    }
-                                                                    disabled={actionLoading !== null}
-                                                                    className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
-                                                                    title="Change role"
-                                                                >
-                                                                    <UserCog className="w-4 h-4" />
-                                                                </button>
                                                                 {!isSelf && (
-                                                                    <button
-                                                                        onClick={() => handleBlockUser(u)}
-                                                                        disabled={actionLoading !== null}
-                                                                        className={`p-2 rounded-lg transition-colors disabled:opacity-50 ${u.isDisabled
-                                                                            ? 'text-blue-600 hover:bg-blue-50'
-                                                                            : 'text-orange-600 hover:bg-orange-50'
-                                                                            }`}
-                                                                        title={u.isDisabled ? 'Unblock user' : 'Block user'}
-                                                                    >
-                                                                        <Ban className="w-4 h-4" />
-                                                                    </button>
-                                                                )}
-                                                                {!isSelf && (
-                                                                    <button
-                                                                        onClick={() => handleDeleteUser(u)}
-                                                                        disabled={actionLoading !== null}
-                                                                        className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
-                                                                        title="Delete user"
-                                                                    >
-                                                                        <Trash2 className="w-4 h-4" />
-                                                                    </button>
+                                                                    <>
+                                                                        <button
+                                                                            onClick={() =>
+                                                                                setRoleModal({
+                                                                                    user: u,
+                                                                                    role: isUserRole(u.role) ? u.role : 'user',
+                                                                                })
+                                                                            }
+                                                                            disabled={actionLoading !== null}
+                                                                            className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
+                                                                            title="Change role"
+                                                                        >
+                                                                            <UserCog className="w-4 h-4" />
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleBlockUser(u)}
+                                                                            disabled={actionLoading !== null}
+                                                                            className={`p-2 rounded-lg transition-colors disabled:opacity-50 ${u.isDisabled
+                                                                                ? 'text-blue-600 hover:bg-blue-50'
+                                                                                : 'text-orange-600 hover:bg-orange-50'
+                                                                                }`}
+                                                                            title={u.isDisabled ? 'Unblock user' : 'Block user'}
+                                                                        >
+                                                                            <Ban className="w-4 h-4" />
+                                                                        </button>
+                                                                        <button
+                                                                            onClick={() => handleDeleteUser(u)}
+                                                                            disabled={actionLoading !== null}
+                                                                            className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
+                                                                            title="Delete user"
+                                                                        >
+                                                                            <Trash2 className="w-4 h-4" />
+                                                                        </button>
+                                                                    </>
                                                                 )}
                                                             </div>
                                                         )}
@@ -508,25 +517,15 @@ export default function UsersPage() {
                             </table>
                         </div>
 
-                        {/* Footer */}
-                        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-                            <p className="text-sm text-gray-600">
-                                {searchQuery.trim()
-                                    ? `${filteredUsers.length} match${filteredUsers.length === 1 ? '' : 'es'} among ${users.length} loaded users`
-                                    : `Showing ${users.length} loaded user${users.length === 1 ? '' : 's'}`}
-                                {totalCount !== null && ` (${totalCount.toLocaleString()} total)`}
-                            </p>
-                            {hasMore && (
-                                <button
-                                    onClick={() => void fetchUsers(true)}
-                                    disabled={loadingMore}
-                                    className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium text-sm transition-colors disabled:opacity-50 flex items-center gap-2"
-                                >
-                                    {loadingMore && <Loader2 className="w-4 h-4 animate-spin" />}
-                                    Load more
-                                </button>
-                            )}
-                        </div>
+                        <Pagination
+                            page={page}
+                            pageSize={PAGE_SIZE}
+                            total={totalCount}
+                            itemCount={users.length}
+                            noun="users"
+                            disabled={loading}
+                            onPageChange={setPage}
+                        />
                     </div>
                 )}
             </div>
@@ -570,7 +569,7 @@ export default function UsersPage() {
                         <h3 className="text-xl font-bold mb-2 text-gray-900">Change Role</h3>
                         <p className="text-gray-600 mb-4 leading-relaxed">
                             {roleModal.user.name || roleModal.user.email || 'This user'} will be assigned the selected
-                            role. The change applies to their permissions the next time their session refreshes.
+                            role. It only takes effect while the account is approved and not blocked.
                         </p>
                         <select
                             value={roleModal.role}
