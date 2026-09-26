@@ -4,8 +4,8 @@ import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/lib/auth-context';
 import { getSupabase } from '@/lib/supabase';
 import { TABLES, errorMessage, sanitizeSearch, toDate } from '@/lib/constants';
-import { LGAS, isLga } from '@/lib/lgas';
-import { STATES, lgasForState } from '@/lib/wards';
+import { isLga } from '@/lib/lgas';
+import { LOCATIONS, STATES, isLgaInState, lgasForState } from '@/lib/wards';
 import { normalizeNigerianPhone } from '@/lib/phone';
 import Pagination from '@/components/Pagination';
 import Modal from '@/components/Modal';
@@ -24,6 +24,8 @@ interface Authority {
     organization: string;
     phone: string;
     coverageLga: string;
+    /** '' for legacy rows (coverage_state NULL): they match the LGA name in every state. */
+    coverageState: string;
     updatedAt: Date | null;
 }
 
@@ -33,6 +35,7 @@ interface AuthorityRow {
     organization: string | null;
     phone: string | null;
     coverage_lga: string | null;
+    coverage_state: string | null;
     updated_at: string | null;
 }
 
@@ -42,10 +45,55 @@ interface AuthorityForm {
     name: string;
     organization: string;
     phone: string;
-    coverageLga: string;
+    /**
+     * Value of the LGA select: `${state}|${lga}` (see lgaKey). A legacy row whose
+     * LGA name exists in several states starts as `|${lga}` until a state is chosen.
+     */
+    coverage: string;
 }
 
-const EMPTY_FORM: AuthorityForm = { name: '', organization: '', phone: '', coverageLga: '' };
+const EMPTY_FORM: AuthorityForm = { name: '', organization: '', phone: '', coverage: '' };
+
+/**
+ * Unique key / select value for an LGA: names repeat across states (Obi is in
+ * Benue and Nasarawa), so the state is part of it. `state` is '' for legacy rows.
+ */
+function lgaKey(state: string, lga: string): string {
+    return `${state}|${lga}`;
+}
+
+function parseLgaKey(key: string): { state: string; lga: string } {
+    const i = key.indexOf('|');
+    return i < 0 ? { state: '', lga: key } : { state: key.slice(0, i), lga: key.slice(i + 1) };
+}
+
+/** States that have an LGA named `lga`. */
+function statesWithLga(lga: string): string[] {
+    return LOCATIONS.filter((l) => l.lga === lga).map((l) => l.state);
+}
+
+/** True when the authority's LGA (and state, when set) is one reports can carry. */
+function isKnownCoverage(state: string, lga: string): boolean {
+    return state ? isLgaInState(state, lga) : isLga(lga);
+}
+
+/** "Obi, Benue", or just the LGA for legacy rows without a state. */
+function coverageLabel(state: string, lga: string): string {
+    return state ? `${lga}, ${state}` : lga;
+}
+
+/** Double-quotes a value for a PostgREST `or=(...)` list (commas, dots and parens are reserved). */
+function quoteFilterValue(value: string): string {
+    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/** Initial select value when editing: legacy rows get their state filled in when the LGA name is unambiguous. */
+function coverageForEdit(a: Authority): string {
+    if (a.coverageState) return isLgaInState(a.coverageState, a.coverageLga) ? lgaKey(a.coverageState, a.coverageLga) : '';
+    const states = statesWithLga(a.coverageLga);
+    if (states.length === 1) return lgaKey(states[0], a.coverageLga);
+    return states.length > 1 ? lgaKey('', a.coverageLga) : '';
+}
 
 const INPUT_CLASS =
     'w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none';
@@ -57,6 +105,7 @@ function toAuthority(row: AuthorityRow): Authority {
         organization: row.organization?.trim() ?? '',
         phone: row.phone?.trim() ?? '',
         coverageLga: row.coverage_lga ?? '',
+        coverageState: row.coverage_state?.trim() ?? '',
         updatedAt: toDate(row.updated_at),
     };
 }
@@ -72,8 +121,8 @@ export default function AuthoritiesPage() {
     const [lgaFilter, setLgaFilter] = useState('all');
     const [reloadKey, setReloadKey] = useState(0);
 
-    /** coverage_lga of every authority (for the gaps panel); null while unknown. */
-    const [coverage, setCoverage] = useState<string[] | null>(null);
+    /** (state, lga) of every authority (for the gaps panel); null while unknown. */
+    const [coverage, setCoverage] = useState<{ state: string; lga: string }[] | null>(null);
 
     const [form, setForm] = useState<AuthorityForm | null>(null);
     const [saving, setSaving] = useState(false);
@@ -100,16 +149,23 @@ export default function AuthoritiesPage() {
             setLoading(true);
             let query = getSupabase()
                 .from(TABLES.AUTHORITIES)
-                .select('id, name, organization, phone, coverage_lga, updated_at', { count: 'exact' })
+                .select('id, name, organization, phone, coverage_lga, coverage_state, updated_at', { count: 'exact' })
                 .order('coverage_lga', { ascending: true })
+                .order('coverage_state', { ascending: true })
                 .order('name', { ascending: true })
                 .order('id', { ascending: true })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-            if (lgaFilter !== 'all') query = query.eq('coverage_lga', lgaFilter);
+            if (lgaFilter !== 'all') {
+                // Everyone texted for that LGA: its state's contacts plus legacy rows without a state.
+                const { state, lga } = parseLgaKey(lgaFilter);
+                query = query
+                    .eq('coverage_lga', lga)
+                    .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`);
+            }
             if (searchQuery) {
                 const p = `*${searchQuery}*`;
                 query = query.or(
-                    `name.ilike.${p},organization.ilike.${p},coverage_lga.ilike.${p},phone.ilike.${p}`,
+                    `name.ilike.${p},organization.ilike.${p},coverage_lga.ilike.${p},coverage_state.ilike.${p},phone.ilike.${p}`,
                 );
             }
             const { data, count, error } = await query;
@@ -145,7 +201,7 @@ export default function AuthoritiesPage() {
         async function loadCoverage() {
             const { data, error } = await getSupabase()
                 .from(TABLES.AUTHORITIES)
-                .select('coverage_lga')
+                .select('coverage_lga, coverage_state')
                 .range(0, COVERAGE_LIMIT - 1);
             if (cancelled) return;
             if (error) {
@@ -153,7 +209,12 @@ export default function AuthoritiesPage() {
                 setCoverage(null);
                 return;
             }
-            setCoverage(((data ?? []) as { coverage_lga: string | null }[]).map((r) => r.coverage_lga ?? ''));
+            setCoverage(
+                ((data ?? []) as { coverage_lga: string | null; coverage_state: string | null }[]).map((r) => ({
+                    lga: r.coverage_lga ?? '',
+                    state: r.coverage_state?.trim() ?? '',
+                })),
+            );
         }
         void loadCoverage();
         return () => {
@@ -163,14 +224,23 @@ export default function AuthoritiesPage() {
 
     const coverageInfo = useMemo(() => {
         if (!coverage) return null;
-        const counts = new Map<string, number>();
-        for (const lga of coverage) counts.set(lga, (counts.get(lga) ?? 0) + 1);
+        // A contact with a state covers that (state, LGA) only; a legacy contact
+        // without a state covers the LGA name in every state (the backend texts it for all).
+        const withState = new Set<string>();
+        const anyState = new Set<string>();
+        for (const c of coverage) {
+            if (c.state) withState.add(lgaKey(c.state, c.lga));
+            else anyState.add(c.lga);
+        }
+        const covered = (state: string, lga: string) => anyState.has(lga) || withState.has(lgaKey(state, lga));
         const gapsByState = STATES.map((state) => ({
             state,
-            lgas: lgasForState(state).filter((lga) => !counts.has(lga)),
+            lgas: lgasForState(state).filter((lga) => !covered(state, lga)),
         })).filter((g) => g.lgas.length > 0);
-        const uncovered = LGAS.filter((lga) => !counts.has(lga)).length;
-        const unknown = Array.from(counts.keys()).filter((lga) => !isLga(lga)).sort();
+        const uncovered = gapsByState.reduce((n, g) => n + g.lgas.length, 0);
+        const unknown = Array.from(
+            new Set(coverage.filter((c) => !isKnownCoverage(c.state, c.lga)).map((c) => coverageLabel(c.state, c.lga))),
+        ).sort();
         return { gapsByState, uncovered, unknown };
     }, [coverage]);
 
@@ -183,6 +253,9 @@ export default function AuthoritiesPage() {
     }
 
     const normalizedPhone = form ? normalizeNigerianPhone(form.phone) : null;
+    const formLga = parseLgaKey(form?.coverage ?? '');
+    /** Legacy row whose LGA name exists in several states: the admin must pick one. */
+    const formNeedsState = !!form && !formLga.state && isLga(formLga.lga);
 
     async function saveAuthority(e: React.FormEvent) {
         e.preventDefault();
@@ -198,26 +271,34 @@ export default function AuthoritiesPage() {
             toast.error('Enter a valid Nigerian phone number, e.g. 0803 123 4567 or +2348031234567.');
             return;
         }
-        if (!isLga(form.coverageLga)) {
+        const { state, lga } = parseLgaKey(form.coverage);
+        if (!isLga(lga)) {
             toast.error('Choose the LGA this contact covers.');
             return;
         }
+        if (!isLgaInState(state, lga)) {
+            toast.error(`Choose the state of ${lga}: the name exists in ${statesWithLga(lga).join(' and ')}.`);
+            return;
+        }
+        const where = coverageLabel(state, lga);
 
         setSaving(true);
         try {
             const supabase = getSupabase();
-            // The same number twice in one LGA would only be texted once; refuse the duplicate.
+            // The same number twice in one (state, LGA) would only be texted once; refuse the
+            // duplicate. A legacy row without a state already covers this LGA in every state.
             let dup = supabase
                 .from(TABLES.AUTHORITIES)
                 .select('id')
-                .eq('coverage_lga', form.coverageLga)
+                .eq('coverage_lga', lga)
                 .eq('phone', phone)
+                .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`)
                 .limit(1);
             if (form.id) dup = dup.neq('id', form.id);
             const { data: dupRows, error: dupError } = await dup;
             if (dupError) throw dupError;
             if (dupRows && dupRows.length > 0) {
-                toast.error(`${phone} is already listed for ${form.coverageLga}.`);
+                toast.error(`${phone} is already listed for ${where}.`);
                 return;
             }
 
@@ -225,7 +306,8 @@ export default function AuthoritiesPage() {
                 name,
                 organization: organization || null,
                 phone,
-                coverage_lga: form.coverageLga,
+                coverage_lga: lga,
+                coverage_state: state,
             };
             const { data, error } = form.id
                 ? await supabase.from(TABLES.AUTHORITIES).update(values).eq('id', form.id).select('id')
@@ -296,8 +378,10 @@ export default function AuthoritiesPage() {
                 <div className="flex gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
                     <Info className="w-5 h-5 flex-shrink-0 mt-0.5" aria-hidden="true" />
                     <p>
-                        Every number listed here receives an SMS when a report in its LGA is approved. The LGA must
-                        match the report&apos;s LGA exactly, so it is chosen from the fixed list. Per approved report
+                        Every number listed here receives an SMS when a report in its LGA is approved. The LGA and
+                        state must match the report&apos;s exactly, so they are chosen from the fixed list (some LGA
+                        names, such as Obi, exist in more than one state). Contacts saved before states were recorded
+                        are texted for that LGA name in every state until edited. Per approved report
                         only the oldest contacts up to the <em>max SMS per alert event</em> setting are texted, and
                         each LGA is capped by <em>max SMS per LGA per day</em> (see Settings).
                     </p>
@@ -318,7 +402,7 @@ export default function AuthoritiesPage() {
                     ) : (
                         <>
                             <p className="text-sm text-gray-600 mb-4">
-                                {coverageInfo.uncovered} of {LGAS.length} LGAs have no contact: approving a report
+                                {coverageInfo.uncovered} of {LOCATIONS.length} LGAs have no contact: approving a report
                                 there sends no SMS to anyone.
                             </p>
                             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -332,8 +416,10 @@ export default function AuthoritiesPage() {
                                                 <li key={lga}>
                                                     <button
                                                         type="button"
-                                                        onClick={() => setForm({ ...EMPTY_FORM, coverageLga: lga })}
-                                                        title={`Add an authority for ${lga}`}
+                                                        onClick={() =>
+                                                            setForm({ ...EMPTY_FORM, coverage: lgaKey(g.state, lga) })
+                                                        }
+                                                        title={`Add an authority for ${coverageLabel(g.state, lga)}`}
                                                         className="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 transition-colors"
                                                     >
                                                         {lga}
@@ -381,10 +467,14 @@ export default function AuthoritiesPage() {
                         className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         <option value="all">All LGAs</option>
-                        {LGAS.map((lga) => (
-                            <option key={lga} value={lga}>
-                                {lga}
-                            </option>
+                        {STATES.map((state) => (
+                            <optgroup key={state} label={state}>
+                                {lgasForState(state).map((lga) => (
+                                    <option key={lgaKey(state, lga)} value={lgaKey(state, lga)}>
+                                        {lga}
+                                    </option>
+                                ))}
+                            </optgroup>
                         ))}
                     </select>
                     <button
@@ -427,7 +517,7 @@ export default function AuthoritiesPage() {
                                     ) : (
                                         authorities.map((a) => {
                                             const phoneOk = normalizeNigerianPhone(a.phone) !== null;
-                                            const lgaOk = isLga(a.coverageLga);
+                                            const lgaOk = isKnownCoverage(a.coverageState, a.coverageLga);
                                             const label = a.name || a.phone || 'authority';
                                             return (
                                                 <tr key={a.id} className="hover:bg-gray-50 transition-colors">
@@ -447,6 +537,17 @@ export default function AuthoritiesPage() {
                                                     </td>
                                                     <td className="px-6 py-4 text-sm text-gray-700">
                                                         {a.coverageLga || '—'}
+                                                        {a.coverageState ? (
+                                                            <span className="block text-xs text-gray-500">
+                                                                {a.coverageState}
+                                                            </span>
+                                                        ) : (
+                                                            a.coverageLga && (
+                                                                <span className="block text-xs text-amber-700">
+                                                                    State not set
+                                                                </span>
+                                                            )
+                                                        )}
                                                         {!lgaOk && (
                                                             <span className="ml-2 inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
                                                                 Unknown LGA
@@ -470,7 +571,7 @@ export default function AuthoritiesPage() {
                                                                             name: a.name,
                                                                             organization: a.organization,
                                                                             phone: a.phone,
-                                                                            coverageLga: lgaOk ? a.coverageLga : '',
+                                                                            coverage: coverageForEdit(a),
                                                                         })
                                                                     }
                                                                     disabled={deletingId !== null}
@@ -596,21 +697,33 @@ export default function AuthoritiesPage() {
                                 <select
                                     id="authority-lga"
                                     required
-                                    value={form.coverageLga}
-                                    onChange={(e) => updateForm('coverageLga', e.target.value)}
+                                    value={form.coverage}
+                                    onChange={(e) => updateForm('coverage', e.target.value)}
+                                    aria-describedby={formNeedsState ? 'authority-lga-hint' : undefined}
+                                    aria-invalid={formNeedsState || undefined}
                                     className={INPUT_CLASS}
                                 >
                                     <option value="">Select an LGA…</option>
+                                    {formNeedsState && (
+                                        <option value={form.coverage}>{formLga.lga} (state not set)</option>
+                                    )}
                                     {STATES.map((state) => (
                                         <optgroup key={state} label={state}>
                                             {lgasForState(state).map((lga) => (
-                                                <option key={`${state}-${lga}`} value={lga}>
+                                                <option key={lgaKey(state, lga)} value={lgaKey(state, lga)}>
                                                     {lga}
                                                 </option>
                                             ))}
                                         </optgroup>
                                     ))}
                                 </select>
+                                {formNeedsState && (
+                                    <p id="authority-lga-hint" className="mt-1 text-xs text-amber-700">
+                                        {formLga.lga} exists in {statesWithLga(formLga.lga).join(' and ')}. Choose the
+                                        state this contact covers: until then it is texted for {formLga.lga} in every
+                                        state.
+                                    </p>
+                                )}
                             </div>
                         </div>
                         <div className="flex gap-3 justify-end mt-6">
@@ -644,7 +757,10 @@ export default function AuthoritiesPage() {
                 >
                     <p className="text-gray-600 mb-6 leading-relaxed">
                         Delete {deleteTarget.name || deleteTarget.phone} ({deleteTarget.phone}) for{' '}
-                        {deleteTarget.coverageLga || 'its LGA'}? This number will stop receiving SMS for approved
+                        {deleteTarget.coverageLga
+                            ? coverageLabel(deleteTarget.coverageState, deleteTarget.coverageLga)
+                            : 'its LGA'}
+                        ? This number will stop receiving SMS for approved
                         reports.
                     </p>
                     <div className="flex gap-3 justify-end">

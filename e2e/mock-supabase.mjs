@@ -54,8 +54,8 @@ const SCHEMA = {
     },
     authorities: {
         pk: 'id',
-        columns: ['id', 'name', 'organization', 'phone', 'coverage_lga', 'created_at', 'updated_at'],
-        defaults: { name: '', organization: null },
+        columns: ['id', 'name', 'organization', 'phone', 'coverage_lga', 'coverage_state', 'created_at', 'updated_at'],
+        defaults: { name: '', organization: null, coverage_state: null },
     },
     app_settings: {
         pk: 'key',
@@ -133,9 +133,9 @@ function seed() {
         report(11, { hazard_type: 'Windstorms', type: 'verification_request', description: 'Please verify: storm damage' }),
     ];
     const authorities = [
-        { id: randomUUID(), name: 'Ado Emergency Desk', organization: 'SEMA Benue', phone: '+2348031234567', coverage_lga: 'Ado', created_at: iso(9), updated_at: iso(9) },
-        { id: randomUUID(), name: "Qua'an Pan Desk", organization: null, phone: '+2348039999999', coverage_lga: "Qua'an Pan", created_at: iso(8), updated_at: iso(8) },
-        { id: randomUUID(), name: 'Old Contact', organization: null, phone: '12345', coverage_lga: 'Nowhere', created_at: iso(7), updated_at: iso(7) },
+        { id: randomUUID(), name: 'Ado Emergency Desk', organization: 'SEMA Benue', phone: '+2348031234567', coverage_lga: 'Ado', coverage_state: null, created_at: iso(9), updated_at: iso(9) },
+        { id: randomUUID(), name: "Qua'an Pan Desk", organization: null, phone: '+2348039999999', coverage_lga: "Qua'an Pan", coverage_state: null, created_at: iso(8), updated_at: iso(8) },
+        { id: randomUUID(), name: 'Old Contact', organization: null, phone: '12345', coverage_lga: 'Nowhere', coverage_state: null, created_at: iso(7), updated_at: iso(7) },
     ];
     const app_settings = [
         { key: 'minimum_peer_confirmations', value: 2, updated_at: iso(6) },
@@ -434,7 +434,9 @@ function parseOr(table, expr) {
     if (!expr.startsWith('(') || !expr.endsWith(')')) throw new RestError(400, 'PGRST100', `failed to parse logic tree (${expr})`);
     const preds = splitTopLevel(expr.slice(1, -1)).map((item) => {
         const dot = item.indexOf('.');
-        return makeFilter(table, item.slice(0, dot), item.slice(dot + 1));
+        // Inside a logic tree PostgREST accepts double-quoted values ("a,b" / "Akwa Ibom").
+        const filter = item.slice(dot + 1).replace(/^((?:not\.)?(?:eq|neq)\.)"(.*)"$/s, (_, op, v) => op + v.replace(/\\(.)/g, '$1'));
+        return makeFilter(table, item.slice(0, dot), filter);
     });
     return (row) => preds.some((p) => p(row));
 }

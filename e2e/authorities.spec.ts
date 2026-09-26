@@ -1,8 +1,15 @@
 import type { Page } from '@playwright/test';
-import { test, expect, openAsAdmin, toast } from './fixtures';
-import { LGAS } from '../lib/lgas';
+import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
+import { LOCATIONS } from '../lib/wards';
 
-type AuthorityRow = { id: string; name: string; phone: string; coverage_lga: string; organization: string | null };
+type AuthorityRow = {
+    id: string;
+    name: string;
+    phone: string;
+    coverage_lga: string;
+    coverage_state: string | null;
+    organization: string | null;
+};
 
 function row(page: Page, name: string) {
     return page.getByRole('row').filter({ hasText: name });
@@ -24,7 +31,9 @@ test.describe('authorities', () => {
         await expect(row(page, "Qua'an Pan Desk")).toContainText("Qua'an Pan");
 
         const panel = gaps(page);
-        await expect(panel).toContainText(`${LGAS.length - 2} of ${LGAS.length} LGAs have no contact`);
+        await expect(panel).toContainText(`${LOCATIONS.length - 2} of ${LOCATIONS.length} LGAs have no contact`);
+        // Legacy rows (coverage_state NULL) are flagged in the list.
+        await expect(row(page, 'Ado Emergency Desk').getByText('State not set')).toBeVisible();
         await expect(panel.getByRole('button', { name: 'Ado', exact: true })).toHaveCount(0);
         await expect(panel.getByRole('button', { name: "Qua'an Pan", exact: true })).toHaveCount(0);
         await expect(panel.getByRole('button', { name: 'Agatu', exact: true })).toBeVisible();
@@ -33,7 +42,7 @@ test.describe('authorities', () => {
         // A gap chip opens the form with that LGA chosen.
         await panel.getByRole('button', { name: 'Agatu', exact: true }).click();
         const dialog = page.getByRole('dialog', { name: 'Add Authority' });
-        await expect(dialog.getByLabel('Coverage LGA')).toHaveValue('Agatu');
+        await expect(dialog.getByLabel('Coverage LGA')).toHaveValue('Benue|Agatu');
     });
 
     test('creates an authority with the phone normalised to E.164', async ({ page, mock }) => {
@@ -55,12 +64,14 @@ test.describe('authorities', () => {
             organization: 'SEMA Benue',
             phone: '+2348031234568',
             coverage_lga: 'Agatu',
+            coverage_state: 'Benue',
         });
         // Duplicate check ran first, on the normalised number.
         const dupCheck = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).find((r) =>
             r.query.includes('phone='),
         );
         expect(decodeURIComponent(dupCheck!.query)).toContain('coverage_lga=eq.Agatu&phone=eq.+2348031234568');
+        expect(decodeURIComponent(dupCheck!.query)).toContain('or=(coverage_state.eq."Benue",coverage_state.is.null)');
         await expect(gaps(page).getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
     });
 
@@ -102,10 +113,10 @@ test.describe('authorities', () => {
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, 'Choose the LGA this contact covers.')).toBeVisible();
 
-        // Same number already listed for Ado.
+        // Same number already listed for Ado (a legacy row without a state counts for every state).
         await dialog.getByLabel('Coverage LGA').selectOption('Ado');
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
-        await expect(toast(page, '+2348031234567 is already listed for Ado.')).toBeVisible();
+        await expect(toast(page, '+2348031234567 is already listed for Ado, Benue.')).toBeVisible();
         await expect(dialog).toBeVisible();
         expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
     });
@@ -114,7 +125,8 @@ test.describe('authorities', () => {
         await row(page, 'Ado Emergency Desk').getByRole('button', { name: 'Edit Ado Emergency Desk' }).click();
         const dialog = page.getByRole('dialog', { name: 'Edit Authority' });
         await expect(dialog.getByLabel('Phone')).toHaveValue('+2348031234567');
-        await expect(dialog.getByLabel('Coverage LGA')).toHaveValue('Ado');
+        // Legacy row (no state): Ado exists only in Benue, so the state is filled in.
+        await expect(dialog.getByLabel('Coverage LGA')).toHaveValue('Benue|Ado');
         await dialog.getByLabel('Phone').fill('0803 123 4000');
         await dialog.getByLabel(/Organisation/).fill('');
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
@@ -122,7 +134,15 @@ test.describe('authorities', () => {
         await expect(row(page, 'Ado Emergency Desk')).toContainText('+2348031234000');
 
         const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(patch.body).toEqual({ name: 'Ado Emergency Desk', organization: null, phone: '+2348031234000', coverage_lga: 'Ado' });
+        expect(patch.body).toEqual({
+            name: 'Ado Emergency Desk',
+            organization: null,
+            phone: '+2348031234000',
+            coverage_lga: 'Ado',
+            coverage_state: 'Benue',
+        });
+        await expect(row(page, 'Ado Emergency Desk').getByText('State not set')).toHaveCount(0);
+        await expect(row(page, 'Ado Emergency Desk')).toContainText('Benue');
         const id = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Ado Emergency Desk')!.id;
         expect(patch.query).toContain(`id=eq.${id}`);
         // The duplicate check excludes the row being edited.
@@ -144,6 +164,85 @@ test.describe('authorities', () => {
         await expect(toast(page, 'Authority updated')).toBeVisible();
         await expect(row(page, 'Old Contact').getByText('Unknown LGA')).toHaveCount(0);
         await expect(gaps(page)).not.toContainText('Nowhere');
+    });
+
+    test('same-named LGAs in different states are distinct (Obi: Benue and Nasarawa)', async ({ page, mock }) => {
+        const panel = gaps(page);
+        const obiChips = panel.getByRole('button', { name: 'Obi', exact: true });
+        await expect(obiChips).toHaveCount(2);
+
+        await page.getByRole('button', { name: 'Add Authority' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Add Authority' });
+        const select = dialog.getByLabel('Coverage LGA');
+        await expect(select.locator('optgroup[label="Benue"] option', { hasText: /^Obi$/ })).toHaveAttribute('value', 'Benue|Obi');
+        await expect(select.locator('optgroup[label="Nasarawa"] option', { hasText: /^Obi$/ })).toHaveAttribute(
+            'value',
+            'Nasarawa|Obi',
+        );
+        await dialog.getByLabel('Name').fill('Obi Nasarawa Desk');
+        await dialog.getByLabel('Phone').fill('08031110003');
+        await select.selectOption('Nasarawa|Obi');
+        await dialog.getByRole('button', { name: 'Add Authority' }).click();
+        await expect(toast(page, 'Authority added')).toBeVisible();
+        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).at(-1)!;
+        expect(post.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Nasarawa', phone: '+2348031110003' });
+        await expect(row(page, 'Obi Nasarawa Desk')).toContainText('Nasarawa');
+
+        // Only Nasarawa's Obi is covered now; Benue's Obi is still a gap.
+        await expect(obiChips).toHaveCount(1);
+        await expect(obiChips).toHaveAttribute('title', 'Add an authority for Obi, Benue');
+        await expect(panel).toContainText(`${LOCATIONS.length - 3} of ${LOCATIONS.length} LGAs have no contact`);
+
+        // The same number may cover Benue's Obi too (duplicate check is per state).
+        await obiChips.click();
+        const dialog2 = page.getByRole('dialog', { name: 'Add Authority' });
+        await expect(dialog2.getByLabel('Coverage LGA')).toHaveValue('Benue|Obi');
+        await dialog2.getByLabel('Name').fill('Obi Benue Desk');
+        await dialog2.getByLabel('Phone').fill('08031110003');
+        await dialog2.getByRole('button', { name: 'Add Authority' }).click();
+        await expect(toast(page, 'Authority added')).toBeVisible();
+        await expect(obiChips).toHaveCount(0);
+        const obi = (await mock.table<AuthorityRow>('authorities')).filter((a) => a.coverage_lga === 'Obi');
+        expect(obi.map((a) => a.coverage_state).sort()).toEqual(['Benue', 'Nasarawa']);
+
+        // The LGA filter tells them apart too.
+        await page.getByLabel('Filter authorities by LGA').selectOption('Nasarawa|Obi');
+        await expect(page.getByText('Showing 1–1 of 1 authorities')).toBeVisible();
+        await expect(row(page, 'Obi Nasarawa Desk')).toBeVisible();
+    });
+
+    test('a legacy authority in an ambiguous LGA must be given a state when edited', async ({ page, mock }) => {
+        const old = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Old Contact')!;
+        await fetch(`${MOCK_URL}/__mock/table/authorities/${old.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ coverage_lga: 'Obi', phone: '08031110009' }),
+        });
+        await page.reload();
+        await expect(page.getByText('Showing 1–3 of 3 authorities')).toBeVisible();
+        // A legacy Obi contact is texted for both states, so neither Obi is a gap.
+        await expect(gaps(page).getByRole('button', { name: 'Obi', exact: true })).toHaveCount(0);
+        await expect(row(page, 'Old Contact').getByText('State not set')).toBeVisible();
+
+        await row(page, 'Old Contact').getByRole('button', { name: 'Edit Old Contact' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Edit Authority' });
+        const select = dialog.getByLabel('Coverage LGA');
+        await expect(select).toHaveValue('|Obi');
+        await expect(select.locator('option:checked')).toHaveText('Obi (state not set)');
+        await expect(dialog).toContainText('Obi exists in Benue and Nasarawa. Choose the state');
+        await dialog.getByRole('button', { name: 'Save Changes' }).click();
+        await expect(toast(page, 'Choose the state of Obi')).toBeVisible();
+        expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).toHaveLength(0);
+
+        await select.selectOption('Benue|Obi');
+        await dialog.getByRole('button', { name: 'Save Changes' }).click();
+        await expect(toast(page, 'Authority updated')).toBeVisible();
+        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).at(-1)!;
+        expect(patch.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Benue' });
+        // Now only Benue's Obi is covered.
+        const chip = gaps(page).getByRole('button', { name: 'Obi', exact: true });
+        await expect(chip).toHaveCount(1);
+        await expect(chip).toHaveAttribute('title', 'Add an authority for Obi, Nasarawa');
     });
 
     test('deletes an authority after confirmation', async ({ page, mock }) => {
