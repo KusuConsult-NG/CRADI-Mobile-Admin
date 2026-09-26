@@ -10,8 +10,10 @@ Supabase project as the Flutter app: Supabase Auth for sign-in and Postgres (wit
 Row Level Security) for data (`profiles`, `reports`, `knowledge_base`, `alerts`,
 `contacts`, `authorities`, `app_settings`). It is hosted on Railway.
 
-The database schema lives in the mobile repo:
-`CRADI-mobile/supabase/migrations/20260925000000_init.sql`.
+The database schema lives in the mobile repo, under
+`CRADI-mobile/supabase/migrations/` — with a consolidated, paste-into-the-SQL-
+editor version at `CRADI-mobile/supabase/deploy/schema.sql`. First-time
+deployment of the whole system: `CRADI-mobile/docs/DEPLOYMENT.md`.
 
 ## Features
 
@@ -43,9 +45,12 @@ See [SETUP.md](./SETUP.md) for granting admin access and deploying to Railway.
 
 | Variable | Where | Purpose |
 | --- | --- | --- |
-| `NEXT_PUBLIC_SUPABASE_URL` | client + server (build time) | Supabase project URL |
+| `NEXT_PUBLIC_SUPABASE_URL` | client + server (build time) | Supabase project URL; also the Supabase origin in the CSP (`lib/csp.ts`) |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | client (build time) | Public anon key; access enforced by RLS |
-| `SUPABASE_SERVICE_ROLE_KEY` | server only | Used by `/api/admin/*` routes and `scripts/set-admin.mjs` |
+| `SUPABASE_SERVICE_ROLE_KEY` | server only (runtime) | Used by `/api/admin/*` routes and `scripts/set-admin.mjs`. Bypasses RLS — never prefix it with `NEXT_PUBLIC_` |
+
+Both `NEXT_PUBLIC_*` values are inlined into the compiled bundle by
+`next build`. Changing them requires a rebuild, not a restart.
 
 ## Project Structure
 

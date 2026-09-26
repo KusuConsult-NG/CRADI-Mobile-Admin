@@ -4,7 +4,11 @@
 
 - Node.js 22+
 - A Supabase project with the CRADI schema applied
-  (`CRADI-mobile/supabase/migrations/20260925000000_init.sql`)
+  (`CRADI-mobile/supabase/deploy/schema.sql`, or the migrations under
+  `CRADI-mobile/supabase/migrations/`)
+
+For a first-time deployment of the whole system, follow
+`CRADI-mobile/docs/DEPLOYMENT.md`; this file covers the admin panel alone.
 
 ## 1. Install
 
@@ -56,10 +60,16 @@ Open http://localhost:3000 and sign in with the admin account.
 `railway.json` configures the service: Nixpacks builder, `npm run build`,
 `npm start` (listens on Railway's `$PORT`), healthcheck `GET /api/health`.
 
-1. Create a Railway service from this repository.
+1. Create a Railway service from this repository
+   (`KusuConsult-NG/CRADI-Mobile-Admin`), branch `supabase-migration`, root
+   directory = repository root.
 2. Add the variables `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
-   and `SUPABASE_SERVICE_ROLE_KEY`. The `NEXT_PUBLIC_*` values are embedded at
-   build time, so redeploy after changing them.
+   and `SUPABASE_SERVICE_ROLE_KEY` **before the first deploy**. The
+   `NEXT_PUBLIC_*` values are inlined into the bundle at build time, so setting
+   or changing them later does nothing until you trigger a new deploy — a
+   restart re-uses the same bundle. Note that `GET /api/health` returns
+   `{"ok": true}` unconditionally, so the Railway healthcheck passes even when
+   the app is misconfigured; verify by opening the site and signing in.
 3. Generate a public domain under the service's **Networking** settings.
 4. Optionally add that domain to Supabase → Authentication → URL Configuration
    (only needed for auth emails / redirects; password sign-in works without it).
@@ -73,4 +83,9 @@ Open http://localhost:3000 and sign in with the admin account.
   panel); unblock it from another admin account or rerun `set:admin`.
 - **Empty lists / failed counts** – RLS only returns data to approved admins;
   check the profile row, and that the migration has been applied.
+- **"Configuration required" screen instead of the login page** – the
+  `NEXT_PUBLIC_*` variables were missing when the bundle was built. Set them and
+  redeploy (not restart). If only the URL is wrong, the Content-Security-Policy
+  built from it (`lib/csp.ts`) blocks every request to Supabase and sign-in
+  fails with no visible error — check the browser console.
 - **"Server is not configured for admin actions."** – set `SUPABASE_SERVICE_ROLE_KEY`.
