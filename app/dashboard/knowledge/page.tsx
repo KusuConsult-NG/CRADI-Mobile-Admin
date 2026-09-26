@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { getSupabase } from '@/lib/supabase';
 import {
     TABLES,
@@ -12,8 +11,7 @@ import {
     type KnowledgeCategory,
 } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
-import { BookOpen, Loader2, Search, ArrowLeft, Plus, Trash2, Edit } from 'lucide-react';
-import Link from 'next/link';
+import { BookOpen, Loader2, Search, Plus, Trash2, Edit } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 24;
@@ -83,7 +81,6 @@ function preview(content: string): string {
 
 export default function KnowledgePage() {
     const { user, loading: authLoading } = useAuth();
-    const router = useRouter();
     const [articles, setArticles] = useState<KnowledgeArticle[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
@@ -109,10 +106,7 @@ export default function KnowledgePage() {
     }, [searchInput, searchQuery]);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-            return;
-        }
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
@@ -144,7 +138,7 @@ export default function KnowledgePage() {
         return () => {
             cancelled = true;
         };
-    }, [user, authLoading, router, page, searchQuery, reloadKey]);
+    }, [user, page, searchQuery, reloadKey]);
 
     async function saveArticle(e: React.FormEvent) {
         e.preventDefault();
@@ -229,16 +223,10 @@ export default function KnowledgePage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div>
+            <div className="bg-white border-b border-gray-200">
                 <div className="max-w-7xl mx-auto px-6 py-4">
                     <div className="flex items-center gap-4">
-                        <Link
-                            href="/dashboard"
-                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                            <ArrowLeft className="w-5 h-5 text-gray-600" />
-                        </Link>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-gradient-to-br from-[#E63946] to-[#9D0208] rounded-lg flex items-center justify-center">
                                 <BookOpen className="w-5 h-5 text-white" />
@@ -250,7 +238,7 @@ export default function KnowledgePage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Search Bar */}

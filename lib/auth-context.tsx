@@ -215,7 +215,7 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
         verifiedUserId.current = null;
         setUser(null);
         toast.success('Logged out successfully');
-        router.push('/login');
+        router.replace('/login');
     }, [router]);
 
     const getAccessToken = useCallback(async () => {

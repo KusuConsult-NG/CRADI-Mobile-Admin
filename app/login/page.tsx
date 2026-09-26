@@ -5,6 +5,7 @@ import { friendlyAuthError, useAuth } from '@/lib/auth-context';
 import { useRouter } from 'next/navigation';
 import { Loader2, AlertCircle, Eye, EyeOff } from 'lucide-react';
 import Image from 'next/image';
+import { DEFAULT_AFTER_LOGIN, safeNextPath } from '@/lib/redirect';
 
 export default function LoginPage() {
     const { user, login, loading: authLoading } = useAuth();
@@ -15,10 +16,12 @@ export default function LoginPage() {
     const [error, setError] = useState('');
     const router = useRouter();
 
-    // Already signed in as an admin (or just logged in): go to the dashboard.
+    // Already signed in as an admin (or just logged in): go back to the page
+    // that sent us here (?next=, same-origin paths only) or to the dashboard.
     useEffect(() => {
         if (!authLoading && user) {
-            router.replace('/dashboard');
+            const next = safeNextPath(new URLSearchParams(window.location.search).get('next'));
+            router.replace(next ?? DEFAULT_AFTER_LOGIN);
         }
     }, [user, authLoading, router]);
 

@@ -33,25 +33,30 @@ const supabase = createClient(url, serviceKey, {
     auth: { persistSession: false, autoRefreshToken: false },
 });
 
-/** Finds the auth user id by email: profiles first, then a scan of auth users. */
+/**
+ * Finds the auth user id by exact email: profiles first, then a scan of auth
+ * users. Uses an exact match (no LIKE wildcards) and refuses ambiguous results.
+ */
 async function findUserId() {
-    const { data: profile, error } = await supabase
+    const { data: profiles, error } = await supabase
         .from('profiles')
         .select('id')
-        .ilike('email', email)
-        .limit(1)
-        .maybeSingle();
+        .eq('email', email)
+        .limit(2);
     if (error) throw new Error(`Profile lookup failed: ${error.message}`);
-    if (profile) return profile.id;
+    if (profiles.length > 1) throw new Error(`More than one profile has email ${email}; refusing to guess.`);
+    if (profiles.length === 1) return profiles[0].id;
 
+    const matches = [];
     const perPage = 1000;
     for (let page = 1; ; page += 1) {
         const { data, error: listError } = await supabase.auth.admin.listUsers({ page, perPage });
         if (listError) throw new Error(`Auth user lookup failed: ${listError.message}`);
-        const match = data.users.find((u) => (u.email || '').toLowerCase() === email);
-        if (match) return match.id;
-        if (data.users.length < perPage) return null;
+        matches.push(...data.users.filter((u) => (u.email || '').trim().toLowerCase() === email));
+        if (data.users.length < perPage) break;
     }
+    if (matches.length > 1) throw new Error(`More than one auth user has email ${email}; refusing to guess.`);
+    return matches[0]?.id ?? null;
 }
 
 async function main() {

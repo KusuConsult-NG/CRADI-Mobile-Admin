@@ -1,17 +1,14 @@
 'use client';
 
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { getSupabase } from '@/lib/supabase';
 import { TABLES } from '@/lib/constants';
 import {
-    LayoutDashboard,
     Users,
     AlertTriangle,
     Phone,
     BookOpen,
-    LogOut,
     Loader2,
     Clock,
     CheckCircle2,
@@ -92,16 +89,12 @@ function formatStat(value: number | null): string {
 }
 
 export default function DashboardPage() {
-    const { user, loading: authLoading, logout } = useAuth();
-    const router = useRouter();
+    const { user, loading: authLoading } = useAuth();
     const [stats, setStats] = useState<Stats>(EMPTY_STATS);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-            return;
-        }
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
@@ -116,7 +109,7 @@ export default function DashboardPage() {
         return () => {
             cancelled = true;
         };
-    }, [user, authLoading, router]);
+    }, [user]);
 
     if (authLoading || !user) {
         return (
@@ -127,36 +120,7 @@ export default function DashboardPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            {/* Header */}
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
-                <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-gradient-to-br from-[#E63946] to-[#9D0208] rounded-lg flex items-center justify-center">
-                            <LayoutDashboard className="w-5 h-5 text-white" />
-                        </div>
-                        <div>
-                            <h1 className="text-xl font-bold text-gray-900">EWER Admin</h1>
-                            <p className="text-xs text-gray-600">Early Warning and Emergency Response</p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                        <div className="text-right">
-                            <p className="text-sm font-medium text-gray-900">{user.name || user.email}</p>
-                            <p className="text-xs text-gray-500">Administrator</p>
-                        </div>
-                        <button
-                            onClick={logout}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            Logout
-                        </button>
-                    </div>
-                </div>
-            </header>
-
+        <div>
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Welcome Section */}
                 <div className="mb-8">

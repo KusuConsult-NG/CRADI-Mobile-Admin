@@ -2,7 +2,6 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { getSupabase, publicImageUrl } from '@/lib/supabase';
 import {
     TABLES,
@@ -14,8 +13,7 @@ import {
     type ReportStatus,
 } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
-import { AlertTriangle, Loader2, Search, ArrowLeft, MapPin, Clock, User } from 'lucide-react';
-import Link from 'next/link';
+import { AlertTriangle, Loader2, Search, MapPin, Clock, User } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 20;
@@ -140,7 +138,6 @@ const ACTION_ORDER: ReportStatus[] = ['approved', 'verified', 'rejected', 'pendi
 
 export default function ReportsPage() {
     const { user, loading: authLoading } = useAuth();
-    const router = useRouter();
     const [reports, setReports] = useState<Report[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
@@ -163,10 +160,7 @@ export default function ReportsPage() {
     }, [searchInput, searchQuery]);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-            return;
-        }
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
@@ -201,7 +195,7 @@ export default function ReportsPage() {
         return () => {
             cancelled = true;
         };
-    }, [user, authLoading, router, page, statusFilter, searchQuery, reloadKey]);
+    }, [user, page, statusFilter, searchQuery, reloadKey]);
 
     async function updateReportStatus(report: Report, newStatus: ReportStatus) {
         if (updatingId || !user) return;
@@ -210,6 +204,10 @@ export default function ReportsPage() {
             const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
             const stampColumn = STATUS_TIMESTAMP[newStatus];
             if (stampColumn) update[stampColumn] = new Date().toISOString();
+            if (newStatus === 'pending') {
+                // Back to the start of the workflow: clear the previous decision.
+                Object.assign(update, { verified_at: null, approved_at: null, rejected_at: null, rejection_reason: null });
+            }
 
             const { data, error } = await getSupabase()
                 .from(TABLES.REPORTS)
@@ -245,16 +243,10 @@ export default function ReportsPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div>
+            <div className="bg-white border-b border-gray-200">
                 <div className="max-w-7xl mx-auto px-6 py-4">
                     <div className="flex items-center gap-4">
-                        <Link
-                            href="/dashboard"
-                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                            <ArrowLeft className="w-5 h-5 text-gray-600" />
-                        </Link>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-gradient-to-br from-orange-600 to-red-600 rounded-lg flex items-center justify-center">
                                 <AlertTriangle className="w-5 h-5 text-white" />
@@ -266,7 +258,7 @@ export default function ReportsPage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Filters */}

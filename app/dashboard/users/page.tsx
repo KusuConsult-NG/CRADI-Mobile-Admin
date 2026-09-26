@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { getSupabase } from '@/lib/supabase';
 import {
     TABLES,
@@ -16,8 +15,7 @@ import {
 } from '@/lib/constants';
 import { adminApi } from '@/lib/admin-api';
 import Pagination from '@/components/Pagination';
-import { Users as UsersIcon, Loader2, Search, ArrowLeft, CheckCircle, Ban, Trash2, UserCog } from 'lucide-react';
-import Link from 'next/link';
+import { Users as UsersIcon, Loader2, Search, CheckCircle, Ban, Trash2, UserCog } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 25;
@@ -134,7 +132,6 @@ function StatusBadge({ user }: { user: AppUser }) {
 
 export default function UsersPage() {
     const { user, loading: authLoading, getAccessToken } = useAuth();
-    const router = useRouter();
     const [users, setUsers] = useState<AppUser[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
@@ -160,10 +157,7 @@ export default function UsersPage() {
     }, [searchInput, searchQuery]);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-            return;
-        }
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
@@ -198,7 +192,7 @@ export default function UsersPage() {
         return () => {
             cancelled = true;
         };
-    }, [user, authLoading, router, page, searchQuery, statusFilter, reloadKey]);
+    }, [user, page, searchQuery, statusFilter, reloadKey]);
 
     const patchLocalUser = useCallback((id: string, patch: Partial<AppUser>) => {
         setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
@@ -331,16 +325,10 @@ export default function UsersPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div>
+            <div className="bg-white border-b border-gray-200">
                 <div className="max-w-7xl mx-auto px-6 py-4">
                     <div className="flex items-center gap-4">
-                        <Link
-                            href="/dashboard"
-                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                            <ArrowLeft className="w-5 h-5 text-gray-600" />
-                        </Link>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-gradient-to-br from-[#E63946] to-[#9D0208] rounded-lg flex items-center justify-center">
                                 <UsersIcon className="w-5 h-5 text-white" />
@@ -352,7 +340,7 @@ export default function UsersPage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Search + Filter */}

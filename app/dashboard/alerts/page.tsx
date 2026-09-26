@@ -2,12 +2,10 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { getSupabase } from '@/lib/supabase';
 import { TABLES, ALERT_SEVERITIES, capitalize, toDate, type AlertSeverity } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
-import { Megaphone, Loader2, ArrowLeft, Plus, MapPin, Clock, BellOff } from 'lucide-react';
-import Link from 'next/link';
+import { Megaphone, Loader2, Plus, MapPin, Clock, BellOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 20;
@@ -66,7 +64,6 @@ function toAlert(row: AlertRow): Alert {
 
 export default function AlertsPage() {
     const { user, loading: authLoading } = useAuth();
-    const router = useRouter();
     const [alerts, setAlerts] = useState<Alert[]>([]);
     const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
@@ -80,10 +77,7 @@ export default function AlertsPage() {
     const [updatingId, setUpdatingId] = useState<string | null>(null);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-            return;
-        }
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
@@ -112,7 +106,7 @@ export default function AlertsPage() {
         return () => {
             cancelled = true;
         };
-    }, [user, authLoading, router, page, filter, reloadKey]);
+    }, [user, page, filter, reloadKey]);
 
     function reloadFirstPage() {
         if (page === 0) setReloadKey((k) => k + 1);
@@ -202,13 +196,10 @@ export default function AlertsPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div>
+            <div className="bg-white border-b border-gray-200">
                 <div className="max-w-7xl mx-auto px-6 py-4">
                     <div className="flex items-center gap-4">
-                        <Link href="/dashboard" className="p-2 hover:bg-gray-100 rounded-lg transition-colors">
-                            <ArrowLeft className="w-5 h-5 text-gray-600" />
-                        </Link>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-gradient-to-br from-rose-500 to-[#9D0208] rounded-lg flex items-center justify-center">
                                 <Megaphone className="w-5 h-5 text-white" />
@@ -220,7 +211,7 @@ export default function AlertsPage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
                 <div className="mb-6 flex flex-col sm:flex-row gap-4 sm:items-center sm:justify-between">
