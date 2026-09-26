@@ -13,6 +13,7 @@ import {
     type ReportStatus,
 } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
+import Modal from '@/components/Modal';
 import { AlertTriangle, Loader2, Search, MapPin, Clock, User } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -136,6 +137,11 @@ const STATUS_ACTIONS: Record<ReportStatus, { label: string; className: string }>
 
 const ACTION_ORDER: ReportStatus[] = ['approved', 'verified', 'rejected', 'pending'];
 
+/** Status changes that need confirmation before they are applied. */
+type ConfirmAction = { report: Report; status: 'rejected' | 'pending' };
+
+const REJECTION_REASON_MAX = 500;
+
 export default function ReportsPage() {
     const { user, loading: authLoading } = useAuth();
     const [reports, setReports] = useState<Report[]>([]);
@@ -147,6 +153,8 @@ export default function ReportsPage() {
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
     const [reloadKey, setReloadKey] = useState(0);
     const [updatingId, setUpdatingId] = useState<string | null>(null);
+    const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+    const [rejectionReason, setRejectionReason] = useState('');
 
     // Debounce the search box; a new search starts again at the first page.
     useEffect(() => {
@@ -170,6 +178,7 @@ export default function ReportsPage() {
                 .from(TABLES.REPORTS)
                 .select(REPORT_COLUMNS, { count: 'exact' })
                 .order('submitted_at', { ascending: false })
+                .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (statusFilter !== 'all') query = query.eq('status', statusFilter);
             if (searchQuery) {
@@ -186,7 +195,14 @@ export default function ReportsPage() {
                 setReports([]);
                 setTotalCount(null);
             } else {
-                setReports(((data ?? []) as ReportRow[]).map(toReport));
+                const rows = (data ?? []) as ReportRow[];
+                if (rows.length === 0 && page > 0) {
+                    // Past the last page (rows changed elsewhere): step back.
+                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                    return;
+                }
+                setReports(rows.map(toReport));
                 setTotalCount(count ?? null);
             }
             setLoading(false);
@@ -197,7 +213,24 @@ export default function ReportsPage() {
         };
     }, [user, page, statusFilter, searchQuery, reloadKey]);
 
-    async function updateReportStatus(report: Report, newStatus: ReportStatus) {
+    /** Reject and Reset to Pending ask for confirmation first; other actions apply directly. */
+    function requestStatusChange(report: Report, newStatus: ReportStatus) {
+        if (newStatus === 'rejected' || newStatus === 'pending') {
+            setRejectionReason('');
+            setConfirmAction({ report, status: newStatus });
+        } else {
+            void updateReportStatus(report, newStatus);
+        }
+    }
+
+    function runConfirmedAction() {
+        if (!confirmAction) return;
+        const { report, status } = confirmAction;
+        setConfirmAction(null);
+        void updateReportStatus(report, status, status === 'rejected' ? rejectionReason.trim() : undefined);
+    }
+
+    async function updateReportStatus(report: Report, newStatus: ReportStatus, reason?: string) {
         if (updatingId || !user) return;
         setUpdatingId(report.id);
         try {
@@ -210,6 +243,7 @@ export default function ReportsPage() {
                 const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
                 const stampColumn = STATUS_TIMESTAMP[newStatus];
                 if (stampColumn) update[stampColumn] = new Date().toISOString();
+                if (newStatus === 'rejected') update.rejection_reason = reason || null;
 
                 const { data, error } = await getSupabase()
                     .from(TABLES.REPORTS)
@@ -279,7 +313,8 @@ export default function ReportsPage() {
                             placeholder="Search by hazard, description, location or reporter..."
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
-                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                            aria-label="Search reports"
+                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
 
@@ -289,7 +324,8 @@ export default function ReportsPage() {
                             setStatusFilter(e.target.value as StatusFilter);
                             setPage(0);
                         }}
-                        className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                        aria-label="Filter reports by status"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         <option value="all">All Status</option>
                         {REPORT_STATUSES.map((s) => (
@@ -412,12 +448,12 @@ export default function ReportsPage() {
                                             {ACTION_ORDER.filter((s) => s !== report.status).map((s) => (
                                                 <button
                                                     key={s}
-                                                    onClick={() => void updateReportStatus(report, s)}
+                                                    onClick={() => requestStatusChange(report, s)}
                                                     disabled={updatingId !== null}
                                                     className={`px-4 py-2 text-white rounded-lg transition-colors text-sm font-medium disabled:opacity-50 ${STATUS_ACTIONS[s].className}`}
                                                 >
                                                     {updatingId === report.id ? (
-                                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                                        <Loader2 className="w-4 h-4 animate-spin" aria-label="Updating" />
                                                     ) : (
                                                         STATUS_ACTIONS[s].label
                                                     )}
@@ -429,7 +465,7 @@ export default function ReportsPage() {
                             })
                         )}
 
-                        {reports.length > 0 && (
+                        {(reports.length > 0 || page > 0) && (
                             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                                 <Pagination
                                     page={page}
@@ -445,6 +481,74 @@ export default function ReportsPage() {
                     </div>
                 )}
             </div>
+
+            {/* Reject / Reset to Pending confirmation */}
+            {confirmAction && (
+                <Modal
+                    title={confirmAction.status === 'rejected' ? 'Reject Report' : 'Reset to Pending'}
+                    titleClassName={`text-xl font-bold mb-4 ${
+                        confirmAction.status === 'rejected' ? 'text-red-600' : 'text-gray-900'
+                    }`}
+                    onClose={() => setConfirmAction(null)}
+                >
+                    <form
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            runConfirmedAction();
+                        }}
+                    >
+                        {confirmAction.status === 'rejected' ? (
+                            <>
+                                <p className="text-gray-600 mb-4 leading-relaxed">
+                                    Reject this {confirmAction.report.hazardType} report? The reporter will see it as
+                                    rejected.
+                                </p>
+                                <label
+                                    htmlFor="rejection-reason"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Reason <span className="text-gray-400 font-normal">(optional)</span>
+                                </label>
+                                <textarea
+                                    id="rejection-reason"
+                                    rows={4}
+                                    maxLength={REJECTION_REASON_MAX}
+                                    value={rejectionReason}
+                                    onChange={(e) => setRejectionReason(e.target.value)}
+                                    placeholder="e.g. Duplicate of an existing report, insufficient detail..."
+                                    className="w-full mb-6 px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                                />
+                            </>
+                        ) : (
+                            <p className="text-gray-600 mb-6 leading-relaxed">
+                                Move this {confirmAction.report.hazardType} report back to pending? All peer
+                                verification votes
+                                {confirmAction.report.verificationCount > 0
+                                    ? ` (${confirmAction.report.verificationCount})`
+                                    : ''}{' '}
+                                and the current decision will be cleared, and escalation will be rescheduled.
+                            </p>
+                        )}
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setConfirmAction(null)}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                className={`px-4 py-2 rounded-lg font-medium text-white transition-colors ${
+                                    STATUS_ACTIONS[confirmAction.status].className
+                                }`}
+                            >
+                                {STATUS_ACTIONS[confirmAction.status].label}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
         </div>
     );
 }

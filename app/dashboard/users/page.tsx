@@ -15,6 +15,7 @@ import {
 } from '@/lib/constants';
 import { adminApi } from '@/lib/admin-api';
 import Pagination from '@/components/Pagination';
+import Modal from '@/components/Modal';
 import { Users as UsersIcon, Loader2, Search, CheckCircle, Ban, Trash2, UserCog } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -167,6 +168,7 @@ export default function UsersPage() {
                 .from(TABLES.PROFILES)
                 .select(PROFILE_COLUMNS, { count: 'exact' })
                 .order('created_at', { ascending: false })
+                .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (statusFilter === 'pending') query = query.eq('is_approved', false).eq('is_disabled', false);
             if (statusFilter === 'approved') query = query.eq('is_approved', true).eq('is_disabled', false);
@@ -183,7 +185,14 @@ export default function UsersPage() {
                 setUsers([]);
                 setTotalCount(null);
             } else {
-                setUsers(((data ?? []) as ProfileRow[]).map(toAppUser));
+                const rows = (data ?? []) as ProfileRow[];
+                if (rows.length === 0 && page > 0) {
+                    // Past the last page (rows changed elsewhere): step back.
+                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                    return;
+                }
+                setUsers(rows.map(toAppUser));
                 setTotalCount(count ?? null);
             }
             setLoading(false);
@@ -352,7 +361,8 @@ export default function UsersPage() {
                             placeholder="Search by name, email, or phone..."
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
-                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                            aria-label="Search users"
+                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
                     <select
@@ -361,7 +371,8 @@ export default function UsersPage() {
                             setStatusFilter(e.target.value as StatusFilter);
                             setPage(0);
                         }}
-                        className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                        aria-label="Filter users by status"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         {STATUS_FILTERS.map((f) => (
                             <option key={f.value} value={f.value}>
@@ -454,6 +465,7 @@ export default function UsersPage() {
                                                                         disabled={actionLoading !== null}
                                                                         className="p-2 text-green-600 hover:bg-green-50 rounded-lg transition-colors disabled:opacity-50"
                                                                         title="Approve user"
+                                                                        aria-label={`Approve ${u.name || u.email || 'user'}`}
                                                                     >
                                                                         <CheckCircle className="w-4 h-4" />
                                                                     </button>
@@ -470,6 +482,7 @@ export default function UsersPage() {
                                                                             disabled={actionLoading !== null}
                                                                             className="p-2 text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50"
                                                                             title="Change role"
+                                                                            aria-label={`Change role of ${u.name || u.email || 'user'}`}
                                                                         >
                                                                             <UserCog className="w-4 h-4" />
                                                                         </button>
@@ -481,6 +494,7 @@ export default function UsersPage() {
                                                                                 : 'text-orange-600 hover:bg-orange-50'
                                                                                 }`}
                                                                             title={u.isDisabled ? 'Unblock user' : 'Block user'}
+                                                                            aria-label={`${u.isDisabled ? 'Unblock' : 'Block'} ${u.name || u.email || 'user'}`}
                                                                         >
                                                                             <Ban className="w-4 h-4" />
                                                                         </button>
@@ -489,6 +503,7 @@ export default function UsersPage() {
                                                                             disabled={actionLoading !== null}
                                                                             className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
                                                                             title="Delete user"
+                                                                            aria-label={`Delete ${u.name || u.email || 'user'}`}
                                                                         >
                                                                             <Trash2 className="w-4 h-4" />
                                                                         </button>
@@ -520,76 +535,77 @@ export default function UsersPage() {
 
             {/* Confirmation Modal */}
             {confirmModal.isOpen && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-                        <h3 className={`text-xl font-bold mb-4 ${confirmModal.isDangerous ? 'text-red-600' : 'text-gray-900'}`}>
-                            {confirmModal.title}
-                        </h3>
-                        <p className="text-gray-600 mb-6 leading-relaxed">
-                            {confirmModal.message}
-                        </p>
-                        <div className="flex gap-3 justify-end">
-                            <button
-                                onClick={closeModal}
-                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => void runConfirm()}
-                                disabled={confirmBusy}
-                                className={`px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 ${confirmModal.isDangerous
-                                    ? 'bg-red-600 text-white hover:bg-red-700'
-                                    : 'bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90'
-                                    }`}
-                            >
-                                {confirmModal.confirmLabel || 'Confirm'}
-                            </button>
-                        </div>
+                <Modal
+                    title={confirmModal.title}
+                    titleClassName={`text-xl font-bold mb-4 ${confirmModal.isDangerous ? 'text-red-600' : 'text-gray-900'}`}
+                    onClose={closeModal}
+                >
+                    <p className="text-gray-600 mb-6 leading-relaxed">
+                        {confirmModal.message}
+                    </p>
+                    <div className="flex gap-3 justify-end">
+                        <button
+                            onClick={closeModal}
+                            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={() => void runConfirm()}
+                            disabled={confirmBusy}
+                            className={`px-4 py-2 rounded-lg font-medium transition-colors disabled:opacity-50 ${confirmModal.isDangerous
+                                ? 'bg-red-600 text-white hover:bg-red-700'
+                                : 'bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90'
+                                }`}
+                        >
+                            {confirmModal.confirmLabel || 'Confirm'}
+                        </button>
                     </div>
-                </div>
+                </Modal>
             )}
 
             {/* Role Modal */}
             {roleModal && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-                        <h3 className="text-xl font-bold mb-2 text-gray-900">Change Role</h3>
-                        <p className="text-gray-600 mb-4 leading-relaxed">
-                            {roleModal.user.name || roleModal.user.email || 'This user'} will be assigned the selected
-                            role. It only takes effect while the account is approved and not blocked.
-                        </p>
-                        <select
-                            value={roleModal.role}
-                            onChange={(e) => {
-                                const role = e.target.value as UserRole;
-                                setRoleModal((prev) => (prev ? { ...prev, role } : prev));
-                            }}
-                            className="w-full mb-6 px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
+                <Modal
+                    title="Change Role"
+                    titleClassName="text-xl font-bold mb-2 text-gray-900"
+                    onClose={() => setRoleModal(null)}
+                >
+                    <p className="text-gray-600 mb-4 leading-relaxed">
+                        {roleModal.user.name || roleModal.user.email || 'This user'} will be assigned the selected
+                        role. It only takes effect while the account is approved and not blocked.
+                    </p>
+                    <select
+                        aria-label="Role"
+                        value={roleModal.role}
+                        onChange={(e) => {
+                            const role = e.target.value as UserRole;
+                            setRoleModal((prev) => (prev ? { ...prev, role } : prev));
+                        }}
+                        className="w-full mb-6 px-4 py-3 rounded-lg border border-gray-300 bg-white focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
+                    >
+                        {USER_ROLES.map((r) => (
+                            <option key={r} value={r}>
+                                {ROLE_LABELS[r]}
+                            </option>
+                        ))}
+                    </select>
+                    <div className="flex gap-3 justify-end">
+                        <button
+                            onClick={() => setRoleModal(null)}
+                            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
                         >
-                            {USER_ROLES.map((r) => (
-                                <option key={r} value={r}>
-                                    {ROLE_LABELS[r]}
-                                </option>
-                            ))}
-                        </select>
-                        <div className="flex gap-3 justify-end">
-                            <button
-                                onClick={() => setRoleModal(null)}
-                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => void submitRoleChange()}
-                                disabled={roleModal.role === roleModal.user.role}
-                                className="px-4 py-2 rounded-lg font-medium transition-colors bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90 disabled:opacity-50"
-                            >
-                                Save Role
-                            </button>
-                        </div>
+                            Cancel
+                        </button>
+                        <button
+                            onClick={() => void submitRoleChange()}
+                            disabled={roleModal.role === roleModal.user.role}
+                            className="px-4 py-2 rounded-lg font-medium transition-colors bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90 disabled:opacity-50"
+                        >
+                            Save Role
+                        </button>
                     </div>
-                </div>
+                </Modal>
             )}
         </div>
     );

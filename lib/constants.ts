@@ -45,17 +45,44 @@ export type ReportStatus = (typeof REPORT_STATUSES)[number];
 export const ALERT_SEVERITIES = ['info', 'warning', 'critical'] as const;
 export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
 
-export const KNOWLEDGE_CATEGORIES = [
-    'Flood',
-    'Drought',
-    'Erosion',
-    'Storm',
-    'Earthquake',
-    'Disease',
-    'Conflict',
-    'General',
-] as const;
-export type KnowledgeCategory = (typeof KNOWLEDGE_CATEGORIES)[number];
+export interface KnowledgeCategory {
+    /** Shown to users and stored in `knowledge_base.category`. */
+    label: string;
+    /** Stored in `knowledge_base.hazard_type`; what the mobile app filters on. */
+    hazardType: string;
+    /** Other (lower-case) spellings found in older rows. */
+    aliases: readonly string[];
+}
+
+/**
+ * Knowledge-base categories. Must stay identical to the mobile app's list in
+ * CRADI-mobile/lib/features/knowledge_base/knowledge_categories.dart.
+ */
+export const KNOWLEDGE_CATEGORIES: readonly KnowledgeCategory[] = [
+    { label: 'Flood', hazardType: 'flood', aliases: ['floods', 'flooding'] },
+    { label: 'Fire', hazardType: 'fire', aliases: ['wildfire', 'wildfires'] },
+    { label: 'Erosion', hazardType: 'erosion', aliases: [] },
+    { label: 'Storm', hazardType: 'storm', aliases: ['storms', 'windstorm', 'windstorms'] },
+    {
+        label: 'Extreme Heat',
+        hazardType: 'extreme_heat',
+        aliases: ['extreme heat', 'heat', 'heatwave', 'drought'],
+    },
+    { label: 'Earthquake', hazardType: 'earthquake', aliases: [] },
+    { label: 'Disease', hazardType: 'disease', aliases: ['epidemic', 'pest/disease'] },
+    { label: 'Conflict', hazardType: 'conflict', aliases: [] },
+    { label: 'Accident', hazardType: 'accident', aliases: [] },
+    { label: 'Safety', hazardType: 'safety', aliases: [] },
+    { label: 'General', hazardType: 'general', aliases: [] },
+];
+
+export const DEFAULT_KNOWLEDGE_CATEGORY: KnowledgeCategory =
+    KNOWLEDGE_CATEGORIES[KNOWLEDGE_CATEGORIES.length - 1];
+
+/** The category whose hazard type is exactly `hazardType`, or null. */
+export function knowledgeCategoryByHazardType(hazardType: string): KnowledgeCategory | null {
+    return KNOWLEDGE_CATEGORIES.find((c) => c.hazardType === hazardType) ?? null;
+}
 
 /** Extracts a human-readable message from an unknown error value. */
 export function errorMessage(error: unknown, fallback = 'Something went wrong'): string {

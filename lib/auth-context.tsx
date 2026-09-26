@@ -27,6 +27,21 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const ADMIN_REQUIRED_MESSAGE =
     'Access denied. This account is not an approved, active administrator.';
 
+export const ADMIN_REVOKED_MESSAGE =
+    'Your administrator access has been revoked or your account was disabled. You have been signed out.';
+
+/** Minimum gap between admin re-checks triggered by window focus. */
+const FOCUS_RECHECK_INTERVAL_MS = 60_000;
+
+/**
+ * Ends only this browser's session. The default scope ('global') would revoke
+ * every refresh token for the user, signing them out of the mobile app and
+ * all other devices too.
+ */
+function signOutLocal() {
+    return getSupabase().auth.signOut({ scope: 'local' });
+}
+
 class AdminRequiredError extends Error {
     constructor() {
         super(ADMIN_REQUIRED_MESSAGE);
@@ -144,7 +159,7 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
                     // Not an admin: end the session silently (login() reports the error).
                     verifiedUserId.current = null;
                     setUser(null);
-                    await supabase.auth.signOut();
+                    await signOutLocal();
                 }
             } catch (error) {
                 console.error('Failed to verify admin profile:', error);
@@ -154,23 +169,69 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
             }
         }
 
-        const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+        /**
+         * Re-checks an already verified session (token refresh, window focus):
+         * if the account was demoted, unapproved or disabled meanwhile, end the
+         * local session and say why. Transient errors keep the current state.
+         */
+        let lastRecheck = 0;
+        let recheckInFlight = false;
+        async function recheck(session: Session) {
+            if (recheckInFlight || loginInProgress.current) return;
+            recheckInFlight = true;
+            lastRecheck = Date.now();
+            try {
+                const admin = await loadAdminProfile(session);
+                if (cancelled || verifiedUserId.current !== session.user.id) return;
+                if (admin) {
+                    setUser((prev) =>
+                        prev && prev.id === admin.id && prev.email === admin.email && prev.name === admin.name
+                            ? prev
+                            : admin,
+                    );
+                    return;
+                }
+                verifiedUserId.current = null;
+                setUser(null);
+                await signOutLocal();
+                toast.error(ADMIN_REVOKED_MESSAGE, { duration: 8000 });
+            } catch (error) {
+                console.error('Failed to re-check admin profile:', error);
+            } finally {
+                recheckInFlight = false;
+            }
+        }
+
+        const { data } = supabase.auth.onAuthStateChange((event, session) => {
             if (!session) {
                 verifiedUserId.current = null;
                 setUser(null);
                 setLoading(false);
                 return;
             }
-            if (loginInProgress.current || session.user.id === verifiedUserId.current) {
+            if (loginInProgress.current) return;
+            if (session.user.id === verifiedUserId.current) {
+                // Defer: Supabase recommends not awaiting other client calls inside this callback.
+                if (event === 'TOKEN_REFRESHED') setTimeout(() => void recheck(session), 0);
                 return;
             }
-            // Defer: Supabase recommends not awaiting other client calls inside this callback.
             setTimeout(() => void verify(session), 0);
         });
+
+        async function onFocus() {
+            if (!verifiedUserId.current || Date.now() - lastRecheck < FOCUS_RECHECK_INTERVAL_MS) return;
+            const { data: current } = await supabase.auth.getSession();
+            if (current.session && current.session.user.id === verifiedUserId.current) {
+                await recheck(current.session);
+            }
+        }
+        const handleFocus = () => void onFocus();
+        window.addEventListener('focus', handleFocus);
 
         return () => {
             cancelled = true;
             data.subscription.unsubscribe();
+            window.removeEventListener('focus', handleFocus);
         };
     }, []);
 
@@ -189,11 +250,11 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
             try {
                 admin = await loadAdminProfile(data.session);
             } catch (profileError) {
-                await supabase.auth.signOut();
+                await signOutLocal();
                 throw profileError;
             }
             if (!admin) {
-                await supabase.auth.signOut();
+                await signOutLocal();
                 throw new AdminRequiredError();
             }
             verifiedUserId.current = admin.id;
@@ -206,7 +267,7 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
     }, []);
 
     const logout = useCallback(async () => {
-        const { error } = await getSupabase().auth.signOut();
+        const { error } = await signOutLocal();
         if (error) {
             console.error('Logout error:', error);
             toast.error('Logout failed. Please try again.');

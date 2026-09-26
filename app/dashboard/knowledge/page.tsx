@@ -6,11 +6,13 @@ import { getSupabase } from '@/lib/supabase';
 import {
     TABLES,
     KNOWLEDGE_CATEGORIES,
+    DEFAULT_KNOWLEDGE_CATEGORY,
+    knowledgeCategoryByHazardType,
     sanitizeSearch,
     toDate,
-    type KnowledgeCategory,
 } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
+import Modal from '@/components/Modal';
 import { BookOpen, Loader2, Search, Plus, Trash2, Edit } from 'lucide-react';
 import toast from 'react-hot-toast';
 
@@ -41,15 +43,32 @@ interface KnowledgeRow {
 
 const KB_COLUMNS = 'id, title, content, source, category, hazard_type, image_url, updated_at, created_at';
 
+/** Dropdown value meaning "keep the article's stored category / hazard type". */
+const KEEP_STORED = '__stored__';
+
 interface ArticleForm {
     title: string;
-    category: KnowledgeCategory;
+    /** A KNOWLEDGE_CATEGORIES hazardType, or KEEP_STORED. */
+    categoryKey: string;
     source: string;
     imageUrl: string;
     content: string;
 }
 
-const EMPTY_FORM: ArticleForm = { title: '', category: 'General', source: '', imageUrl: '', content: '' };
+interface EditorState {
+    id: string | null;
+    form: ArticleForm;
+    /** Stored category / hazard type that match no listed category exactly. */
+    stored: { category: string; hazardType: string } | null;
+}
+
+const EMPTY_FORM: ArticleForm = {
+    title: '',
+    categoryKey: DEFAULT_KNOWLEDGE_CATEGORY.hazardType,
+    source: '',
+    imageUrl: '',
+    content: '',
+};
 
 function str(value: unknown): string {
     return typeof value === 'string' ? value : '';
@@ -68,9 +87,26 @@ function toArticle(row: KnowledgeRow): KnowledgeArticle {
     };
 }
 
-function matchCategory(article: KnowledgeArticle): KnowledgeCategory {
-    const candidates = [article.category, article.hazardType].map((c) => (c ?? '').toLowerCase());
-    return KNOWLEDGE_CATEGORIES.find((c) => candidates.includes(c.toLowerCase())) ?? 'General';
+/**
+ * Editor state for an existing article. Its stored category / hazard type are
+ * kept unless the admin picks another category; a pair that is not exactly one
+ * of the listed categories is offered as an extra "current value" option.
+ */
+function editorFor(article: KnowledgeArticle): EditorState {
+    const hazardType = article.hazardType ?? '';
+    const listed = knowledgeCategoryByHazardType(hazardType);
+    const exact = listed !== null && listed.label === article.category;
+    return {
+        id: article.id,
+        form: {
+            title: article.title,
+            categoryKey: exact ? listed.hazardType : KEEP_STORED,
+            source: article.source,
+            imageUrl: article.imageUrl,
+            content: article.content,
+        },
+        stored: exact ? null : { category: article.category, hazardType },
+    };
 }
 
 function preview(content: string): string {
@@ -89,7 +125,7 @@ export default function KnowledgePage() {
     const [searchQuery, setSearchQuery] = useState('');
     const [reloadKey, setReloadKey] = useState(0);
 
-    const [editor, setEditor] = useState<{ id: string | null; form: ArticleForm } | null>(null);
+    const [editor, setEditor] = useState<EditorState | null>(null);
     const [saving, setSaving] = useState(false);
     const [deleteTarget, setDeleteTarget] = useState<KnowledgeArticle | null>(null);
     const [deleting, setDeleting] = useState(false);
@@ -116,6 +152,7 @@ export default function KnowledgePage() {
                 .from(TABLES.KNOWLEDGE_BASE)
                 .select(KB_COLUMNS, { count: 'exact' })
                 .order('updated_at', { ascending: false })
+                .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (searchQuery) {
                 const p = `*${searchQuery}*`;
@@ -129,7 +166,14 @@ export default function KnowledgePage() {
                 setArticles([]);
                 setTotalCount(null);
             } else {
-                setArticles(((data ?? []) as KnowledgeRow[]).map(toArticle));
+                const rows = (data ?? []) as KnowledgeRow[];
+                if (rows.length === 0 && page > 0) {
+                    // Past the last page (rows were deleted elsewhere): step back.
+                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                    return;
+                }
+                setArticles(rows.map(toArticle));
                 setTotalCount(count ?? null);
             }
             setLoading(false);
@@ -143,7 +187,7 @@ export default function KnowledgePage() {
     async function saveArticle(e: React.FormEvent) {
         e.preventDefault();
         if (!editor || saving) return;
-        const { id, form } = editor;
+        const { id, form, stored } = editor;
         const title = form.title.trim();
         const content = form.content.trim();
         const imageUrl = form.imageUrl.trim();
@@ -156,14 +200,21 @@ export default function KnowledgePage() {
             return;
         }
 
-        const data = {
+        const picked = knowledgeCategoryByHazardType(form.categoryKey);
+        const data: Record<string, unknown> = {
             title,
             content,
             source: form.source.trim(),
-            category: form.category,
-            hazard_type: form.category.toLowerCase(),
             image_url: imageUrl || null,
         };
+        if (picked) {
+            data.category = picked.label;
+            data.hazard_type = picked.hazardType;
+        } else if (!stored) {
+            data.category = DEFAULT_KNOWLEDGE_CATEGORY.label;
+            data.hazard_type = DEFAULT_KNOWLEDGE_CATEGORY.hazardType;
+        }
+        // Otherwise KEEP_STORED on an existing article: leave both columns untouched.
 
         setSaving(true);
         try {
@@ -250,11 +301,12 @@ export default function KnowledgePage() {
                             placeholder="Search articles by title, category, hazard type or source..."
                             value={searchInput}
                             onChange={(e) => setSearchInput(e.target.value)}
-                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                            aria-label="Search knowledge articles"
+                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
                     <button
-                        onClick={() => setEditor({ id: null, form: EMPTY_FORM })}
+                        onClick={() => setEditor({ id: null, form: EMPTY_FORM, stored: null })}
                         className="flex items-center justify-center gap-2 px-5 py-3 rounded-lg font-medium text-white bg-gradient-to-r from-[#E63946] to-[#9D0208] hover:opacity-90 transition-opacity"
                     >
                         <Plus className="w-5 h-5" />
@@ -311,20 +363,10 @@ export default function KnowledgePage() {
                                         </span>
                                         <div className="flex items-center gap-1">
                                             <button
-                                                onClick={() =>
-                                                    setEditor({
-                                                        id: article.id,
-                                                        form: {
-                                                            title: article.title,
-                                                            category: matchCategory(article),
-                                                            source: article.source,
-                                                            imageUrl: article.imageUrl,
-                                                            content: article.content,
-                                                        },
-                                                    })
-                                                }
+                                                onClick={() => setEditor(editorFor(article))}
                                                 className="p-2 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
                                                 title="Edit article"
+                                                aria-label={`Edit article ${article.title}`}
                                             >
                                                 <Edit className="w-4 h-4" />
                                             </button>
@@ -333,6 +375,7 @@ export default function KnowledgePage() {
                                                 disabled={deleting}
                                                 className="p-2 text-red-600 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
                                                 title="Delete article"
+                                                aria-label={`Delete article ${article.title}`}
                                             >
                                                 <Trash2 className="w-4 h-4" />
                                             </button>
@@ -344,7 +387,7 @@ export default function KnowledgePage() {
                     </div>
                 )}
 
-                {!loading && articles.length > 0 && (
+                {!loading && (articles.length > 0 || page > 0) && (
                     <div className="mt-8 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                         <Pagination
                             page={page}
@@ -361,14 +404,13 @@ export default function KnowledgePage() {
 
             {/* Create / Edit Modal */}
             {editor && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <form
-                        onSubmit={(e) => void saveArticle(e)}
-                        className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
-                    >
-                        <h3 className="text-xl font-bold mb-4 text-gray-900">
-                            {editor.id ? 'Edit Article' : 'New Article'}
-                        </h3>
+                <Modal
+                    title={editor.id ? 'Edit Article' : 'New Article'}
+                    onClose={() => setEditor(null)}
+                    closeDisabled={saving}
+                    className="max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
+                >
+                    <form onSubmit={(e) => void saveArticle(e)}>
                         <div className="space-y-4">
                             <div>
                                 <label htmlFor="kb-title" className="block text-sm font-medium text-gray-700 mb-1">
@@ -390,13 +432,18 @@ export default function KnowledgePage() {
                                     </label>
                                     <select
                                         id="kb-category"
-                                        value={editor.form.category}
-                                        onChange={(e) => updateForm('category', e.target.value as KnowledgeCategory)}
-                                        className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
+                                        value={editor.form.categoryKey}
+                                        onChange={(e) => updateForm('categoryKey', e.target.value)}
+                                        className="w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
                                     >
+                                        {editor.stored && (
+                                            <option value={KEEP_STORED}>
+                                                {editor.stored.category || '(none)'} / {editor.stored.hazardType || '(none)'} (current)
+                                            </option>
+                                        )}
                                         {KNOWLEDGE_CATEGORIES.map((c) => (
-                                            <option key={c} value={c}>
-                                                {c}
+                                            <option key={c.hazardType} value={c.hazardType}>
+                                                {c.label}
                                             </option>
                                         ))}
                                     </select>
@@ -461,15 +508,17 @@ export default function KnowledgePage() {
                             </button>
                         </div>
                     </form>
-                </div>
+                </Modal>
             )}
 
             {/* Delete Confirmation */}
             {deleteTarget && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-                        <h3 className="text-xl font-bold mb-4 text-red-600">Delete Article</h3>
-                        <p className="text-gray-600 mb-6 leading-relaxed">
+                <Modal
+                    title="Delete Article"
+                    titleClassName="text-xl font-bold mb-4 text-red-600"
+                    onClose={() => setDeleteTarget(null)}
+                >
+                    <p className="text-gray-600 mb-6 leading-relaxed">
                             Delete &ldquo;{deleteTarget.title}&rdquo;? This cannot be undone.
                         </p>
                         <div className="flex gap-3 justify-end">
@@ -487,8 +536,7 @@ export default function KnowledgePage() {
                                 Delete
                             </button>
                         </div>
-                    </div>
-                </div>
+                </Modal>
             )}
         </div>
     );

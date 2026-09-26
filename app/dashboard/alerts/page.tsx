@@ -5,6 +5,7 @@ import { useAuth } from '@/lib/auth-context';
 import { getSupabase } from '@/lib/supabase';
 import { TABLES, ALERT_SEVERITIES, capitalize, toDate, type AlertSeverity } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
+import Modal from '@/components/Modal';
 import { Megaphone, Loader2, Plus, MapPin, Clock, BellOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { LGAS } from '@/lib/lgas';
@@ -88,6 +89,7 @@ export default function AlertsPage() {
                 .from(TABLES.ALERTS)
                 .select('id, title, message, severity, target_lga, is_active, created_at', { count: 'exact' })
                 .order('created_at', { ascending: false })
+                .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (filter !== 'all') query = query.eq('is_active', filter === 'active');
             const { data, count, error } = await query;
@@ -98,7 +100,14 @@ export default function AlertsPage() {
                 setAlerts([]);
                 setTotalCount(null);
             } else {
-                setAlerts(((data ?? []) as AlertRow[]).map(toAlert));
+                const rows = (data ?? []) as AlertRow[];
+                if (rows.length === 0 && page > 0) {
+                    // Past the last page (rows changed elsewhere): step back.
+                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                    return;
+                }
+                setAlerts(rows.map(toAlert));
                 setTotalCount(count ?? null);
             }
             setLoading(false);
@@ -222,7 +231,8 @@ export default function AlertsPage() {
                             setFilter(e.target.value as ActiveFilter);
                             setPage(0);
                         }}
-                        className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                        aria-label="Filter alerts by status"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         <option value="active">Active alerts</option>
                         <option value="inactive">Inactive alerts</option>
@@ -291,6 +301,7 @@ export default function AlertsPage() {
                                             <button
                                                 onClick={() => setDeactivateTarget(alert)}
                                                 disabled={updatingId !== null}
+                                                aria-label={`Deactivate alert ${alert.title}`}
                                                 className="flex items-center justify-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-100 font-medium text-sm transition-colors disabled:opacity-50"
                                             >
                                                 {updatingId === alert.id ? (
@@ -306,7 +317,7 @@ export default function AlertsPage() {
                             ))
                         )}
 
-                        {alerts.length > 0 && (
+                        {(alerts.length > 0 || page > 0) && (
                             <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
                                 <Pagination
                                     page={page}
@@ -325,12 +336,14 @@ export default function AlertsPage() {
 
             {/* Create Modal */}
             {form && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <form
-                        onSubmit={(e) => void createAlert(e)}
-                        className="bg-white rounded-xl shadow-2xl max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
-                    >
-                        <h3 className="text-xl font-bold mb-2 text-gray-900">New Alert</h3>
+                <Modal
+                    title="New Alert"
+                    titleClassName="text-xl font-bold mb-2 text-gray-900"
+                    onClose={() => setForm(null)}
+                    closeDisabled={saving}
+                    className="max-w-2xl w-full p-6 max-h-[90vh] overflow-y-auto"
+                >
+                    <form onSubmit={(e) => void createAlert(e)}>
                         <p className="text-sm text-gray-600 mb-4">
                             Publishing sends a push notification to app users in the target LGA (or everyone).
                         </p>
@@ -358,7 +371,7 @@ export default function AlertsPage() {
                                         id="alert-severity"
                                         value={form.severity}
                                         onChange={(e) => updateForm('severity', e.target.value as AlertSeverity)}
-                                        className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
+                                        className="w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
                                     >
                                         {ALERT_SEVERITIES.map((s) => (
                                             <option key={s} value={s}>
@@ -422,34 +435,31 @@ export default function AlertsPage() {
                             </button>
                         </div>
                     </form>
-                </div>
+                </Modal>
             )}
 
             {/* Deactivate Confirmation */}
             {deactivateTarget && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl max-w-md w-full p-6">
-                        <h3 className="text-xl font-bold mb-4 text-gray-900">Deactivate Alert</h3>
-                        <p className="text-gray-600 mb-6 leading-relaxed">
-                            Deactivate &ldquo;{deactivateTarget.title}&rdquo;? It will no longer be shown as an active
-                            alert in the app.
-                        </p>
-                        <div className="flex gap-3 justify-end">
-                            <button
-                                onClick={() => setDeactivateTarget(null)}
-                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
-                            >
-                                Cancel
-                            </button>
-                            <button
-                                onClick={() => void confirmDeactivate()}
-                                className="px-4 py-2 rounded-lg font-medium transition-colors bg-red-600 text-white hover:bg-red-700"
-                            >
-                                Deactivate
-                            </button>
-                        </div>
+                <Modal title="Deactivate Alert" onClose={() => setDeactivateTarget(null)}>
+                    <p className="text-gray-600 mb-6 leading-relaxed">
+                        Deactivate &ldquo;{deactivateTarget.title}&rdquo;? It will no longer be shown as an active
+                        alert in the app.
+                    </p>
+                    <div className="flex gap-3 justify-end">
+                        <button
+                            onClick={() => setDeactivateTarget(null)}
+                            className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                        >
+                            Cancel
+                        </button>
+                        <button
+                            onClick={() => void confirmDeactivate()}
+                            className="px-4 py-2 rounded-lg font-medium transition-colors bg-red-600 text-white hover:bg-red-700"
+                        >
+                            Deactivate
+                        </button>
                     </div>
-                </div>
+                </Modal>
             )}
         </div>
     );

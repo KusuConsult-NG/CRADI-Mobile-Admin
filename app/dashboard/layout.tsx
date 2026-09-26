@@ -40,7 +40,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
+        <div className="min-h-screen bg-gray-50 text-gray-900">
             <header className="bg-white border-b border-gray-200 sticky top-0 z-20 shadow-sm">
                 <div className="max-w-7xl mx-auto px-6 py-4 flex flex-wrap items-center justify-between gap-4">
                     <Link href="/dashboard" className="flex items-center gap-3">
@@ -77,7 +77,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                             <p className="text-xs text-gray-500">Administrator</p>
                         </div>
                         <button
-                            onClick={logout}
+                            onClick={() => void logout()}
                             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         >
                             <LogOut className="w-4 h-4" />
