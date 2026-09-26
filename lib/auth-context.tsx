@@ -17,7 +17,8 @@ interface AuthContextType {
     user: AdminUser | null;
     loading: boolean;
     login: (email: string, password: string) => Promise<void>;
-    logout: () => Promise<void>;
+    /** Ends this browser's session and goes to /login; false if sign-out failed. */
+    logout: () => Promise<boolean>;
     /** Returns a current Supabase access token for authenticating admin API calls. */
     getAccessToken: () => Promise<string>;
 }
@@ -271,12 +272,13 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
         if (error) {
             console.error('Logout error:', error);
             toast.error('Logout failed. Please try again.');
-            return;
+            return false;
         }
         verifiedUserId.current = null;
         setUser(null);
         toast.success('Logged out successfully');
         router.replace('/login');
+        return true;
     }, [router]);
 
     const getAccessToken = useCallback(async () => {

@@ -9,7 +9,9 @@ function supabaseOrigins(): { https: string; wss: string } | null {
   if (!raw) return null;
   try {
     const url = new URL(raw);
-    return { https: url.origin, wss: `wss://${url.host}` };
+    // A local Supabase (http://127.0.0.1:54321) serves realtime over ws://.
+    const ws = url.protocol === "http:" ? "ws" : "wss";
+    return { https: url.origin, wss: `${ws}://${url.host}` };
   } catch {
     return null;
   }
@@ -28,7 +30,8 @@ function contentSecurityPolicy(): string {
     "default-src 'self'",
     `script-src ${scriptSrc.join(" ")}`,
     "style-src 'self' 'unsafe-inline'",
-    "img-src 'self' data: blob: https:",
+    // Report images are served by Supabase Storage (also over http for a local Supabase).
+    `img-src 'self' data: blob: https:${supabase ? ` ${supabase.https}` : ""}`,
     "font-src 'self' data:",
     `connect-src ${connectSrc.join(" ")}`,
     "object-src 'none'",

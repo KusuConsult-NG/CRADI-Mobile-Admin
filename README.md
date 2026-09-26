@@ -67,6 +67,11 @@ lib/
 └── auth-context.tsx                # Auth provider with admin-profile check
 scripts/
 └── set-admin.mjs                   # Promote a user to approved admin
+e2e/
+├── playwright.config.ts            # Starts the mock + a production build, runs *.spec.ts
+├── mock-supabase.mjs               # In-memory Supabase mock (auth, PostgREST subset, Storage)
+├── fixtures.ts                     # Mock reset/request log, console/CSP guard, login helper
+└── *.spec.ts                       # Auth, dashboard, users, reports, authorities, settings, knowledge, alerts
 railway.json                        # Railway build/deploy config
 ```
 
@@ -87,7 +92,8 @@ railway.json                        # Railway build/deploy config
 - Authorities and app settings are written directly with the admin's session;
   RLS allows writes only for admins.
 - `next.config.ts` sets a Content-Security-Policy (Supabase origin taken from
-  `NEXT_PUBLIC_SUPABASE_URL` at build time — rebuild if it changes) plus
+  `NEXT_PUBLIC_SUPABASE_URL` at build time — rebuild if it changes; it is allowed
+  for API calls, realtime and Storage images) plus
   X-Frame-Options, Referrer-Policy, X-Content-Type-Options and Permissions-Policy.
 - The service role key is server-only; never commit it or prefix it with `NEXT_PUBLIC_`.
 
@@ -96,6 +102,34 @@ railway.json                        # Railway build/deploy config
 - `npm run dev` / `npm run build` / `npm start` (`npm start` honours `$PORT`)
 - `npm run lint` – ESLint; `npm run typecheck` – TypeScript
 - `npm run set:admin -- <email>` – promote an existing user to admin
+- `npm run test:e2e` – Playwright end-to-end tests against a mocked Supabase (below)
+
+## End-to-end tests
+
+`e2e/` holds Playwright tests that drive a production build in Chromium. Supabase
+is replaced by `e2e/mock-supabase.mjs`, a small in-memory GoTrue + PostgREST mock
+(tables seeded with an approved admin, pending / unconfirmed / approved / blocked
+users, reports for all 9 hazards plus a legacy `Floods` row and a verification
+request, authorities, settings, alerts, knowledge articles and contacts). It
+serves both the browser and the Next.js API routes (service role), rejects
+columns that are not in the real schema, and records every request so tests can
+assert request bodies.
+
+```bash
+npx playwright install chromium        # once, if no Chromium matching @playwright/test is installed
+npm run test:e2e                       # next build + next start on :3100, mock on :54321, run all tests
+E2E_SKIP_BUILD=1 npm run test:e2e      # reuse .next from a previous test:e2e build
+npm run test:e2e -- users.spec.ts      # one file
+```
+
+- The build is made with `NEXT_PUBLIC_SUPABASE_URL=http://127.0.0.1:54321` and
+  dummy keys (`test`); it overwrites `.next`, so rebuild with your real
+  environment before deploying from the same checkout.
+- `PW_CHROMIUM_EXECUTABLE=/path/to/chrome` launches a specific Chromium binary;
+  `PLAYWRIGHT_BROWSERS_PATH` is honoured as usual. `MOCK_SUPABASE_PORT` /
+  `E2E_APP_PORT` change the ports.
+- Every test fails on unexpected console errors, uncaught exceptions or CSP
+  violations. Failure screenshots and traces go to `test-results/` (git-ignored).
 
 ## Related Projects
 

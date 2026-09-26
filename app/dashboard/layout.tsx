@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { LayoutDashboard, Loader2, LogOut } from 'lucide-react';
@@ -27,11 +27,20 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
     const { user, loading, logout } = useAuth();
     const router = useRouter();
     const pathname = usePathname() ?? '/dashboard';
+    // Set while an explicit logout runs: logout() itself goes to plain /login,
+    // so the guard below must not race it with /login?next=<this page>.
+    const [loggingOut, setLoggingOut] = useState(false);
 
     useEffect(() => {
         // replace (not push) so Back does not return to a page that needs a session.
-        if (!loading && !user) router.replace(loginHref(pathname));
-    }, [user, loading, router, pathname]);
+        if (!loading && !user && !loggingOut) router.replace(loginHref(pathname));
+    }, [user, loading, loggingOut, router, pathname]);
+
+    async function handleLogout() {
+        setLoggingOut(true);
+        // On success stay flagged: this layout unmounts once /login is shown.
+        if (!(await logout())) setLoggingOut(false);
+    }
 
     if (loading || !user) {
         return (
@@ -79,7 +88,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                             <p className="text-xs text-gray-500">Administrator</p>
                         </div>
                         <button
-                            onClick={() => void logout()}
+                            onClick={() => void handleLogout()}
                             className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
                         >
                             <LogOut className="w-4 h-4" />
