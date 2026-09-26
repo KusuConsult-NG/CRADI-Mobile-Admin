@@ -91,7 +91,12 @@ const SETTINGS: readonly SettingDef[] = [
 ];
 
 const SETTING_KEYS = SETTINGS.map((s) => s.key);
-const SEMVER_RE = /^\d{1,4}\.\d{1,4}\.\d{1,6}$/;
+/**
+ * 1 to 3 numeric parts ("2", "1.2", "1.0.14"). The mobile app
+ * (RemoteConfigService.compareVersions) compares part by part and treats
+ * missing parts as 0, so "1.2" means 1.2.0.
+ */
+const SEMVER_RE = /^\d{1,4}(?:\.\d{1,4}(?:\.\d{1,6})?)?$/;
 /** One address, no spaces, a dot in the domain (what a mail app can open). */
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const EMAIL_MAX = 254;
@@ -142,7 +147,7 @@ function parseValue(def: SettingDef, raw: string | boolean): { value: number | b
         }
         case 'semver': {
             const text = String(raw).trim();
-            if (!SEMVER_RE.test(text)) return { error: 'Use the form MAJOR.MINOR.PATCH, e.g. 1.0.14.' };
+            if (!SEMVER_RE.test(text)) return { error: 'Use numbers separated by dots, e.g. 1.0.14 or 1.2.' };
             return { value: text };
         }
         case 'email': {
@@ -222,7 +227,9 @@ export default function SettingsPage() {
             }
         }
     }
-    const hasErrors = Object.keys(errors).length > 0;
+    // Only keys being saved must be valid: an invalid value already stored
+    // (and left alone) is still highlighted but does not block other changes.
+    const hasErrors = changed.some((def) => def.key in errors);
 
     async function save(e: React.FormEvent) {
         e.preventDefault();

@@ -49,8 +49,8 @@ const SCHEMA = {
     },
     alerts: {
         pk: 'id',
-        columns: ['id', 'title', 'message', 'severity', 'target_lga', 'report_id', 'created_by', 'is_active', 'created_at', 'updated_at'],
-        defaults: { message: '', severity: 'info', target_lga: 'All', is_active: true },
+        columns: ['id', 'title', 'message', 'severity', 'target_lga', 'target_state', 'report_id', 'created_by', 'is_active', 'created_at', 'updated_at'],
+        defaults: { message: '', severity: 'info', target_lga: 'All', target_state: null, is_active: true },
     },
     authorities: {
         pk: 'id',
@@ -152,8 +152,8 @@ function seed() {
         { key: 'unrelated_key', value: 'ignored', updated_at: iso(6) },
     ];
     const alerts = [
-        { id: randomUUID(), title: 'Flood warning', message: 'Move to higher ground', severity: 'warning', target_lga: 'Makurdi', report_id: null, created_by: IDS.admin, is_active: true, created_at: iso(1), updated_at: iso(1) },
-        { id: randomUUID(), title: 'Old drill', message: 'Past exercise', severity: 'info', target_lga: 'All', report_id: null, created_by: IDS.admin, is_active: false, created_at: iso(5), updated_at: iso(5) },
+        { id: randomUUID(), title: 'Flood warning', message: 'Move to higher ground', severity: 'warning', target_lga: 'Makurdi', target_state: null, report_id: null, created_by: IDS.admin, is_active: true, created_at: iso(1), updated_at: iso(1) },
+        { id: randomUUID(), title: 'Old drill', message: 'Past exercise', severity: 'info', target_lga: 'All', target_state: null, report_id: null, created_by: IDS.admin, is_active: false, created_at: iso(5), updated_at: iso(5) },
     ];
     const knowledge_base = [
         { id: randomUUID(), title: 'Flood safety basics', content: 'Stay away from flood water.', source: 'NEMA', category: 'Flood', hazard_type: 'flood', image_url: null, legacy_firebase_id: null, created_at: iso(4), updated_at: iso(4) },
@@ -180,6 +180,9 @@ const PNG_1PX = Buffer.from(
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
     'base64',
 );
+
+/** PostgREST `max-rows` as configured on Supabase. */
+const MAX_ROWS = 1000;
 
 let state = seed();
 let requestLog = [];
@@ -533,6 +536,13 @@ function checkNotNull(table, row) {
 
 /** Check constraints evaluated on every insert and update. */
 function checkConstraints(table, row) {
+    // 20260927050000_alert_target_state.sql: NULL, or a non-blank, unpadded name.
+    if (table === 'alerts' && row.target_state != null) {
+        const v = row.target_state;
+        if (typeof v !== 'string' || v !== v.trim() || v === '') {
+            throw new RestError(400, '23514', 'new row for relation "alerts" violates check constraint "alerts_target_state_check"');
+        }
+    }
     if (table === 'news_links') {
         const violation = (name) =>
             new RestError(400, '23514', `new row for relation "news_links" violates check constraint "${name}"`);
@@ -627,7 +637,9 @@ function handleRest(req, res, url, body) {
 
     if (req.method === 'GET' || req.method === 'HEAD') {
         const matched = sortRows(rows.filter(q.match), q.order);
-        const page = matched.slice(q.offset, q.limit === null ? undefined : q.offset + q.limit);
+        // PostgREST max-rows (1000 on Supabase) silently caps every response.
+        const limit = Math.min(q.limit ?? MAX_ROWS, MAX_ROWS);
+        const page = matched.slice(q.offset, q.offset + limit);
         const total = wantsCount(req) ? matched.length : null;
         const headers = { 'Content-Range': contentRange(q.offset, page.length, total) };
         if (req.method === 'HEAD') return send(res, 200, undefined, headers);

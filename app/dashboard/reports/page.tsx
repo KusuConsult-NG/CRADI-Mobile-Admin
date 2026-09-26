@@ -21,6 +21,9 @@ import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 20;
 
+/** Postgres error codes whose message is written for people: insufficient_privilege, invalid_parameter_value, no_data_found. */
+const SERVER_MESSAGE_CODES = new Set(['42501', '22023', 'P0002']);
+
 type StatusFilter = 'all' | ReportStatus;
 
 /** Report `type` of a peer verification request (as opposed to a direct hazard report). */
@@ -263,14 +266,23 @@ export default function ReportsPage() {
                 if (stampColumn) update[stampColumn] = new Date().toISOString();
                 if (newStatus === 'rejected') update.rejection_reason = reason || null;
 
+                // Optimistic lock: only apply the decision to the status this
+                // card showed. If someone else decided (or reopened) the report
+                // meanwhile, no row matches and nothing is overwritten.
                 const { data, error } = await getSupabase()
                     .from(TABLES.REPORTS)
                     .update(update)
                     .eq('id', report.id)
+                    .eq('status', report.status)
                     .select('id');
                 if (error) throw error;
-                // RLS filters rows silently: no row back means the update was not allowed.
-                if (!data || data.length === 0) throw new Error('Report not found or not permitted');
+                if (!data || data.length === 0) {
+                    // No row back: the status changed since the list loaded (RLS
+                    // would also filter silently, but staff may update reports).
+                    toast.error('This report changed since you loaded it — reloading');
+                    setReloadKey((k) => k + 1);
+                    return;
+                }
             }
 
             toast.success(`Report marked as ${newStatus}`);
@@ -284,12 +296,17 @@ export default function ReportsPage() {
             }
         } catch (error) {
             console.error('Error updating report:', error);
-            // Database permission errors carry a readable reason (e.g. own report).
             const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
             const message = error instanceof Error || (typeof error === 'object' && error && 'message' in error)
                 ? String((error as { message: unknown }).message)
                 : '';
-            toast.error(code === '42501' && message ? message : 'Failed to update report');
+            // Database errors with a readable reason: permission (e.g. own
+            // report), invalid state (e.g. "Report is already pending"), not
+            // found; thrown Errors carry their own message.
+            const readable = SERVER_MESSAGE_CODES.has(code) || error instanceof Error;
+            toast.error(readable && message ? message : 'Failed to update report');
+            // Invalid state means the list is out of date.
+            if (code === '22023') setReloadKey((k) => k + 1);
         } finally {
             setUpdatingId(null);
         }

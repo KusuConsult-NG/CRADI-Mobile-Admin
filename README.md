@@ -19,7 +19,7 @@ The database schema lives in the mobile repo:
 - **User management**: search, filter, paginate; approve, revoke approval, change role, change location (state / LGA / ward from the INEC list), block/unblock, delete (Auth account + profile)
 - **Report management**: filter by status and hazard (legacy spellings included), search, paginate; set approved / verified / rejected / pending; view images; canonical hazard names and a "Verification request" badge
 - **Knowledge base**: create, edit and delete hazard guides
-- **Community alerts**: publish alerts (title, message, severity, target LGA) — the backend pushes them to app users — and deactivate them
+- **Community alerts**: publish alerts (title, message, severity, target state and LGA picked from the location list) — the backend pushes them to app users — and deactivate them
 - **Authorities**: manage the SMS contacts texted when a report in their LGA is approved (name, organisation, phone normalised to `+234XXXXXXXXXX`, coverage LGA from the fixed list); search / filter by LGA; a panel lists LGAs with no contact
 - **App settings**: edit the live `app_settings` keys (peer confirmations, escalation timeout, SMS caps, peer chat flag, minimum app version + message) with typed validation; other keys are ignored
 - **Admin-only access**: the signed-in user's profile must have `role = 'admin'`, `is_approved = true` and `is_disabled = false`
@@ -91,10 +91,14 @@ railway.json                        # Railway build/deploy config
   also refuses approving an unconfirmed account; its message is shown as is.
 - Authorities and app settings are written directly with the admin's session;
   RLS allows writes only for admins.
-- `next.config.ts` sets a Content-Security-Policy (Supabase origin taken from
-  `NEXT_PUBLIC_SUPABASE_URL` at build time — rebuild if it changes; it is allowed
-  for API calls, realtime and Storage images) plus
-  X-Frame-Options, Referrer-Policy, X-Content-Type-Options and Permissions-Policy.
+- `proxy.ts` sets a Content-Security-Policy per request (`lib/csp.ts`): scripts
+  need a fresh nonce (`'nonce-…' 'strict-dynamic'`, no `'unsafe-inline'`), so
+  pages are rendered per request rather than prerendered. The Supabase origin is
+  taken from `NEXT_PUBLIC_SUPABASE_URL` at build time — rebuild if it changes; it
+  is allowed for API calls, realtime and Storage images.
+- `next.config.ts` adds Strict-Transport-Security (production builds:
+  `max-age=63072000; includeSubDomains`), X-Frame-Options, Referrer-Policy,
+  X-Content-Type-Options and Permissions-Policy.
 - The service role key is server-only; never commit it or prefix it with `NEXT_PUBLIC_`.
 
 ## Scripts

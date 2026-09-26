@@ -66,12 +66,15 @@ test.describe('authorities', () => {
             coverage_lga: 'Agatu',
             coverage_state: 'Benue',
         });
-        // Duplicate check ran first, on the normalised number.
+        // Duplicate check ran first: every contact of the (state, LGA), compared
+        // after normalising the stored numbers too (not a raw phone=eq filter).
         const dupCheck = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).find((r) =>
-            r.query.includes('phone='),
+            r.query.includes('coverage_lga=eq.Agatu'),
         );
-        expect(decodeURIComponent(dupCheck!.query)).toContain('coverage_lga=eq.Agatu&phone=eq.+2348031234568');
-        expect(decodeURIComponent(dupCheck!.query)).toContain('or=(coverage_state.eq."Benue",coverage_state.is.null)');
+        const dupQuery = decodeURIComponent(dupCheck!.query);
+        expect(dupQuery).toContain('select=id,phone');
+        expect(dupQuery).not.toContain('phone=eq.');
+        expect(dupQuery).toContain('or=(coverage_state.eq."Benue",coverage_state.is.null)');
         await expect(gaps(page).getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
     });
 
@@ -121,6 +124,63 @@ test.describe('authorities', () => {
         expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
     });
 
+    test('a stored number in another spelling still counts as a duplicate', async ({ page, mock }) => {
+        const ado = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Ado Emergency Desk')!;
+        // Written before numbers were normalised.
+        await fetch(`${MOCK_URL}/__mock/table/authorities/${ado.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ phone: '0803 123 4567' }),
+        });
+        await page.getByRole('button', { name: 'Add Authority' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Add Authority' });
+        await dialog.getByLabel('Name').fill('Same number');
+        await dialog.getByLabel('Phone').fill('+234 803 123 4567');
+        await dialog.getByLabel('Coverage LGA').selectOption('Ado');
+        await dialog.getByRole('button', { name: 'Add Authority' }).click();
+        await expect(toast(page, '+2348031234567 is already listed for Ado, Benue.')).toBeVisible();
+        expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
+    });
+
+    test('coverage reads every row in 1000-row pages (PostgREST max-rows)', async ({ page, mock }) => {
+        // 1100 contacts: fillers for Makurdi, and the only Agatu contact sorted last by id.
+        const rows = Array.from({ length: 1099 }, (_, i) => ({
+            id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+            name: `Filler ${i}`,
+            phone: `+23480300${String(i).padStart(5, '0')}`,
+            coverage_lga: 'Makurdi',
+            coverage_state: 'Benue',
+        }));
+        rows.push({
+            id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+            name: 'Agatu Desk',
+            phone: '+2348031110000',
+            coverage_lga: 'Agatu',
+            coverage_state: 'Benue',
+        });
+        const res = await fetch(`${MOCK_URL}/rest/v1/authorities`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(rows),
+        });
+        expect(res.status).toBe(201);
+
+        await page.reload();
+        await expect(page.getByText('Showing 1–25 of 1,103 authorities')).toBeVisible();
+        const panel = gaps(page);
+        await expect(panel).toContainText(`${LOCATIONS.length - 4} of ${LOCATIONS.length} LGAs have no contact`);
+        await expect(panel.getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
+        await expect(panel.getByRole('button', { name: 'Makurdi', exact: true })).toHaveCount(0);
+
+        const coverage = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).filter((r) =>
+            decodeURIComponent(r.query).startsWith('select=coverage_lga,coverage_state'),
+        );
+        const offsets = coverage.map((r) => new URLSearchParams(r.query).get('offset'));
+        // The last load (after the reload): pages at 0 and 1000, then a short page ends it.
+        expect(offsets.slice(-2)).toEqual(['0', '1000']);
+        for (const r of coverage) expect(new URLSearchParams(r.query).get('limit')).toBe('1000');
+    });
+
     test('edits an authority', async ({ page, mock }) => {
         await row(page, 'Ado Emergency Desk').getByRole('button', { name: 'Edit Ado Emergency Desk' }).click();
         const dialog = page.getByRole('dialog', { name: 'Edit Authority' });
@@ -147,7 +207,7 @@ test.describe('authorities', () => {
         expect(patch.query).toContain(`id=eq.${id}`);
         // The duplicate check excludes the row being edited.
         const dupCheck = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).find((r) =>
-            r.query.includes('phone='),
+            decodeURIComponent(r.query).startsWith('select=id,phone'),
         );
         expect(dupCheck!.query).toContain(`id=neq.${id}`);
     });

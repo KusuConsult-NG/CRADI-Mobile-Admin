@@ -1,4 +1,4 @@
-import { test, expect, openAsAdmin, toast } from './fixtures';
+import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
 
 type SettingRow = { key: string; value: unknown; updated_at: string };
 
@@ -54,13 +54,17 @@ test.describe('app settings', () => {
         await page.getByLabel('Escalation timeout').fill('30');
 
         const version = page.getByLabel('Minimum app version');
-        for (const bad of ['1.0', 'v1.0.0', '1.0.0-beta', '1..0']) {
+        for (const bad of ['v1.0.0', '1.0.0-beta', '1..0', '1.2.3.4', '1.', '']) {
             await version.fill(bad);
-            await expect(page.getByText('Use the form MAJOR.MINOR.PATCH, e.g. 1.0.14.')).toBeVisible();
+            await expect(page.getByText('Use numbers separated by dots, e.g. 1.0.14 or 1.2.')).toBeVisible();
             await expect(save).toBeDisabled();
         }
-        await version.fill('1.0.14');
-        await expect(save).toBeEnabled();
+        // 1 to 3 numeric parts, as the app compares them (missing parts are 0).
+        for (const good of ['1.2', '2', '1.0.14']) {
+            await version.fill(good);
+            await expect(page.getByText('Use numbers separated by dots, e.g. 1.0.14 or 1.2.')).toHaveCount(0);
+            await expect(save).toBeEnabled();
+        }
 
         const email = page.getByLabel('Support email');
         for (const bad of ['', 'support', 'support@cradi', 'help desk@cradi.org', 'a@b@cradi.org']) {
@@ -72,6 +76,35 @@ test.describe('app settings', () => {
         await email.fill('help@cradi.org');
         await expect(save).toBeEnabled();
         expect(await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).toHaveLength(0);
+    });
+
+    test('an invalid stored value that is left unchanged does not block saving other keys', async ({ page, mock }) => {
+        await fetch(`${MOCK_URL}/__mock/table/app_settings/app_min_version`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ value: 'latest' }),
+        });
+        await page.reload();
+        const version = page.getByLabel('Minimum app version');
+        await expect(version).toHaveValue('latest');
+        // Still highlighted, but not part of the save.
+        await expect(version).toHaveAttribute('aria-invalid', 'true');
+        await page.getByLabel('Escalation timeout').fill('45');
+        await page.getByRole('button', { name: 'Save 4 changes' }).click();
+        await expect(toast(page, 'Saved 4 settings')).toBeVisible();
+        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
+        const keys = (post.body as SettingRow[]).map((r) => r.key);
+        expect(keys).toContain('escalation_timeout_minutes');
+        expect(keys).not.toContain('app_min_version');
+
+        // Editing the invalid key itself does block saving until it is valid.
+        await version.fill('1.x');
+        await expect(page.getByRole('button', { name: /^Save/ })).toBeDisabled();
+        await version.fill('1.2');
+        await page.getByRole('button', { name: 'Save 1 change' }).click();
+        await expect(toast(page, 'Saved 1 setting')).toBeVisible();
+        const stored = (await mock.table<SettingRow>('app_settings')).find((r) => r.key === 'app_min_version');
+        expect(stored?.value).toBe('1.2');
     });
 
     test('saves changed values as typed JSON via upsert', async ({ page, mock }) => {

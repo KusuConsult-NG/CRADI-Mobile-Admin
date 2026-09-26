@@ -161,6 +161,31 @@ test.describe('users', () => {
         expect((await profileOf(mock, IDS.approved))?.is_approved).toBe(false);
     });
 
+    test('approving or blocking in a filtered list reloads it (the row leaves the filter)', async ({ page }) => {
+        const filter = page.getByLabel('Filter users by status');
+        await filter.selectOption('pending');
+        await expect(page.getByRole('row')).toHaveCount(3);
+        await row(page, 'Ada Confirmed').getByRole('button', { name: 'Approve Ada Confirmed' }).click();
+        await confirmDialog(page, 'Approve User', 'Approve');
+        await expect(toast(page, 'User approved successfully!')).toBeVisible();
+        await expect(row(page, 'Ada Confirmed')).toHaveCount(0);
+        await expect(page.getByRole('row')).toHaveCount(2);
+
+        await filter.selectOption('approved');
+        await expect(row(page, 'Ada Confirmed')).toBeVisible();
+        await row(page, 'Bola Approved').getByRole('button', { name: 'Block Bola Approved' }).click();
+        await confirmDialog(page, 'Block User', 'Block');
+        await expect(toast(page, 'User blocked successfully!')).toBeVisible();
+        await expect(row(page, 'Bola Approved')).toHaveCount(0);
+
+        await filter.selectOption('blocked');
+        await expect(row(page, 'Bola Approved')).toBeVisible();
+        await row(page, 'Bola Approved').getByRole('button', { name: 'Unblock Bola Approved' }).click();
+        await confirmDialog(page, 'Unblock User', 'Unblock');
+        await expect(toast(page, 'User unblocked successfully!')).toBeVisible();
+        await expect(row(page, 'Bola Approved')).toHaveCount(0);
+    });
+
     test('changes location through the state → LGA → ward cascade (Obi exists in two states)', async ({
         page,
         mock,

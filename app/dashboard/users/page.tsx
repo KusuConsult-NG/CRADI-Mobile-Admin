@@ -303,6 +303,12 @@ export default function UsersPage() {
         [getAccessToken],
     );
 
+    /** Reload the filtered list after a change that can move the row out of the filter. */
+    function reloadAfterStatusChange() {
+        if (users.length === 1 && page > 0) setPage((p) => p - 1);
+        else setReloadKey((k) => k + 1);
+    }
+
     function handleApproveUser(target: AppUser) {
         setConfirmModal({
             isOpen: true,
@@ -318,8 +324,10 @@ export default function UsersPage() {
                         method: 'PATCH',
                         body: { approve: true, expected: target.loaded },
                     });
-                    patchLocalUser(target.id, { isApproved: true, isVerified: true });
                     toast.success('User approved successfully!');
+                    // A filtered list (pending/approved/blocked) may no longer include the row.
+                    if (statusFilter !== 'all') reloadAfterStatusChange();
+                    else patchLocalUser(target.id, { isApproved: true, isVerified: true });
                 } catch (error) {
                     console.error('Error approving user:', error);
                     const message = errorMessage(error);
@@ -350,9 +358,8 @@ export default function UsersPage() {
                         body: { approve: false, expected: target.loaded },
                     });
                     toast.success('Approval revoked');
-                    if (statusFilter === 'approved') {
-                        if (users.length === 1 && page > 0) setPage((p) => p - 1);
-                        else setReloadKey((k) => k + 1);
+                    if (statusFilter !== 'all') {
+                        reloadAfterStatusChange();
                     } else {
                         patchLocalUser(target.id, { isApproved: false });
                     }
@@ -420,8 +427,9 @@ export default function UsersPage() {
                 setActionLoading(target.id);
                 try {
                     await userApi(target.id, { method: 'PATCH', body: { disabled: !currentlyBlocked } });
-                    patchLocalUser(target.id, { isDisabled: !currentlyBlocked });
                     toast.success(`User ${action}ed successfully!`);
+                    if (statusFilter !== 'all') reloadAfterStatusChange();
+                    else patchLocalUser(target.id, { isDisabled: !currentlyBlocked });
                 } catch (error) {
                     console.error(`Error trying to ${action} user:`, error);
                     toast.error(`Failed to ${action} user: ${errorMessage(error)}`);

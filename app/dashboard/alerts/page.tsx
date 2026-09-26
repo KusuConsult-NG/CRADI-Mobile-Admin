@@ -8,7 +8,7 @@ import Pagination from '@/components/Pagination';
 import Modal from '@/components/Modal';
 import { Megaphone, Loader2, Plus, MapPin, Clock, BellOff } from 'lucide-react';
 import toast from 'react-hot-toast';
-import { LGAS } from '@/lib/lgas';
+import { STATES, isLgaInState, lgasForState } from '@/lib/wards';
 
 const PAGE_SIZE = 20;
 
@@ -20,6 +20,8 @@ interface Alert {
     message: string;
     severity: string;
     targetLga: string;
+    /** '' for legacy alerts (target_state NULL): target_lga matches in any state. */
+    targetState: string;
     isActive: boolean;
     createdAt: Date | null;
 }
@@ -30,6 +32,7 @@ interface AlertRow {
     message: string | null;
     severity: string | null;
     target_lga: string | null;
+    target_state: string | null;
     is_active: boolean | null;
     created_at: string | null;
 }
@@ -38,13 +41,38 @@ interface AlertForm {
     title: string;
     message: string;
     severity: AlertSeverity;
+    /** '' = every state. */
+    targetState: string;
+    /** 'All' = every LGA (of targetState, or everywhere when no state is chosen). */
     targetLga: string;
 }
 
-// Same suggestions as the mobile admin alerts screen; any LGA name can be typed.
-const LGA_SUGGESTIONS = ['All', ...LGAS];
+const EMPTY_FORM: AlertForm = { title: '', message: '', severity: 'info', targetState: '', targetLga: 'All' };
 
-const EMPTY_FORM: AlertForm = { title: '', message: '', severity: 'info', targetLga: 'All' };
+/**
+ * The (target_state, target_lga) to store for a form, or an error. Only
+ * values from the location list are accepted: a typo would reach no one, and
+ * LGA names repeat across states (Obi is in Benue and in Nasarawa).
+ */
+function alertTarget(form: AlertForm): { state: string | null; lga: string } | { error: string } {
+    const state = form.targetState;
+    const lga = form.targetLga;
+    if (!state) return lga === 'All' ? { state: null, lga: 'All' } : { error: 'Choose the state of the target LGA.' };
+    if (!STATES.includes(state)) return { error: 'Choose a state from the list.' };
+    if (lga === 'All') return { state, lga: 'All' };
+    if (!isLgaInState(state, lga)) return { error: `Choose an LGA of ${state} from the list.` };
+    return { state, lga };
+}
+
+/** "Obi, Benue", "All LGAs in Benue", "All LGAs", or just the LGA for legacy alerts. */
+function targetLabel(alert: Pick<Alert, 'targetLga' | 'targetState'>): string {
+    const allLgas = alert.targetLga.toLowerCase() === 'all';
+    if (!alert.targetState) return allLgas ? 'All LGAs' : alert.targetLga;
+    return allLgas ? `All LGAs in ${alert.targetState}` : `${alert.targetLga}, ${alert.targetState}`;
+}
+
+const SELECT_CLASS =
+    'w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900';
 
 const SEVERITY_STYLES: Record<string, string> = {
     info: 'bg-blue-100 text-blue-700',
@@ -59,6 +87,7 @@ function toAlert(row: AlertRow): Alert {
         message: row.message ?? '',
         severity: row.severity ?? 'info',
         targetLga: row.target_lga?.trim() || 'All',
+        targetState: row.target_state?.trim() ?? '',
         isActive: row.is_active === true,
         createdAt: toDate(row.created_at),
     };
@@ -87,7 +116,7 @@ export default function AlertsPage() {
             setLoading(true);
             let query = getSupabase()
                 .from(TABLES.ALERTS)
-                .select('id, title, message, severity, target_lga, is_active, created_at', { count: 'exact' })
+                .select('id, title, message, severity, target_lga, target_state, is_active, created_at', { count: 'exact' })
                 .order('created_at', { ascending: false })
                 .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
@@ -132,6 +161,11 @@ export default function AlertsPage() {
             toast.error('Title and message are required.');
             return;
         }
+        const target = alertTarget(form);
+        if ('error' in target) {
+            toast.error(target.error);
+            return;
+        }
 
         setSaving(true);
         try {
@@ -142,7 +176,8 @@ export default function AlertsPage() {
                     title,
                     message,
                     severity: form.severity,
-                    target_lga: form.targetLga.trim() || 'All',
+                    target_lga: target.lga,
+                    target_state: target.state,
                     is_active: true,
                     created_by: user.id,
                 })
@@ -289,7 +324,7 @@ export default function AlertsPage() {
                                             <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-500">
                                                 <div className="flex items-center gap-2">
                                                     <MapPin className="w-4 h-4 flex-shrink-0" />
-                                                    <span>{alert.targetLga === 'All' ? 'All LGAs' : alert.targetLga}</span>
+                                                    <span>{targetLabel(alert)}</span>
                                                 </div>
                                                 <div className="flex items-center gap-2">
                                                     <Clock className="w-4 h-4 flex-shrink-0" />
@@ -345,7 +380,9 @@ export default function AlertsPage() {
                 >
                     <form onSubmit={(e) => void createAlert(e)}>
                         <p className="text-sm text-gray-600 mb-4">
-                            Publishing sends a push notification to app users in the target LGA (or everyone).
+                            Publishing sends a push notification to app users in the target area (or everyone).
+                            Users of older app versions that have not reported their state do not receive the push
+                            for an alert targeted at a state.
                         </p>
                         <div className="space-y-4">
                             <div>
@@ -381,24 +418,52 @@ export default function AlertsPage() {
                                     </select>
                                 </div>
                                 <div>
+                                    <label htmlFor="alert-state" className="block text-sm font-medium text-gray-700 mb-1">
+                                        Target state
+                                    </label>
+                                    <select
+                                        id="alert-state"
+                                        value={form.targetState}
+                                        onChange={(e) => {
+                                            const targetState = e.target.value;
+                                            setForm((prev) => (prev ? { ...prev, targetState, targetLga: 'All' } : prev));
+                                        }}
+                                        className={SELECT_CLASS}
+                                    >
+                                        <option value="">All states</option>
+                                        {STATES.map((s) => (
+                                            <option key={s} value={s}>
+                                                {s}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div className="sm:col-span-2">
                                     <label htmlFor="alert-lga" className="block text-sm font-medium text-gray-700 mb-1">
                                         Target LGA
                                     </label>
-                                    <input
+                                    <select
                                         id="alert-lga"
-                                        type="text"
-                                        list="alert-lga-options"
                                         value={form.targetLga}
+                                        disabled={!form.targetState}
                                         onChange={(e) => updateForm('targetLga', e.target.value)}
-                                        placeholder="All"
-                                        className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
-                                    />
-                                    <datalist id="alert-lga-options">
-                                        {LGA_SUGGESTIONS.map((l) => (
-                                            <option key={l} value={l} />
-                                        ))}
-                                    </datalist>
-                                    <p className="text-xs text-gray-500 mt-1">Use &ldquo;All&rdquo; to alert every LGA.</p>
+                                        className={`${SELECT_CLASS} disabled:bg-gray-100 disabled:text-gray-500`}
+                                    >
+                                        <option value="All">
+                                            {form.targetState ? `All LGAs in ${form.targetState}` : 'All LGAs'}
+                                        </option>
+                                        {form.targetState &&
+                                            lgasForState(form.targetState).map((l) => (
+                                                <option key={l} value={l}>
+                                                    {l}
+                                                </option>
+                                            ))}
+                                    </select>
+                                    <p className="text-xs text-gray-500 mt-1">
+                                        {form.targetState
+                                            ? 'Only users in this state (and LGA, if chosen) are alerted.'
+                                            : 'Choose a state to target one of its LGAs; otherwise every user is alerted.'}
+                                    </p>
                                 </div>
                             </div>
                             <div>

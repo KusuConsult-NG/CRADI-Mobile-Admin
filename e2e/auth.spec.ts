@@ -91,6 +91,18 @@ test.describe('authentication', () => {
         expect(csp).toContain(`img-src 'self' data: blob: https: ${MOCK_URL}`);
         expect(csp).toContain("frame-ancestors 'none'");
         expect(csp).not.toContain('unsafe-eval');
+        // Scripts: a per-request nonce, no 'unsafe-inline'.
+        const scriptSrc = csp.split('; ').find((d) => d.startsWith('script-src '))!;
+        expect(scriptSrc).toMatch(/^script-src 'self' 'nonce-[A-Za-z0-9+/=]{24}' 'strict-dynamic'$/);
+        const nonce = scriptSrc.match(/'nonce-([^']+)'/)![1];
+        const html = await res.text();
+        const scripts = html.match(/<script\b[^>]*>/g) ?? [];
+        expect(scripts.length).toBeGreaterThan(0);
+        for (const tag of scripts) expect(tag).toContain(`nonce="${nonce}"`);
+        const again = (await request.get('/login')).headers()['content-security-policy'];
+        expect(again).not.toContain(nonce);
         expect(res.headers()['x-frame-options']).toBe('DENY');
+        // Production build: HTTPS-only for two years.
+        expect(res.headers()['strict-transport-security']).toBe('max-age=63072000; includeSubDomains');
     });
 });

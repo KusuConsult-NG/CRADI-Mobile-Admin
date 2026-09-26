@@ -9,6 +9,10 @@ function card(page: Page, description: string) {
 
 const titles = (page: Page) => page.locator('h3');
 
+function capitalize(s: string) {
+    return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 async function reportBy(mock: { table<T>(name: string): Promise<T[]> }, description: string) {
     return (await mock.table<ReportRow>('reports')).find((r) => r.description === description)!;
 }
@@ -86,7 +90,55 @@ test.describe('reports', () => {
         await expect(card(page, 'River Benue overflowing').getByText('Approved', { exact: true })).toBeVisible();
         const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
         expect(patch.body).toEqual({ status: 'approved', updated_by: IDS.admin, approved_at: expect.any(String) });
+        // Optimistic lock: only applies to the status the card showed.
+        expect(new URLSearchParams(patch.query).get('status')).toBe('eq.pending');
         expect((await reportBy(mock, 'River Benue overflowing')).status).toBe('approved');
+    });
+
+    for (const [button, elsewhere] of [
+        ['Approve', 'rejected'],
+        ['Mark Verified', 'approved'],
+    ] as const) {
+        test(`${button} on a report decided elsewhere is refused and the list reloads`, async ({ page, mock }) => {
+            const row = await reportBy(mock, 'Roofs blown off');
+            // Another admin decides the report after this page loaded.
+            await fetch(`${MOCK_URL}/__mock/table/reports/${row.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ status: elsewhere }),
+            });
+            const target = card(page, 'Roofs blown off');
+            await expect(target.getByText('Pending', { exact: true })).toBeVisible();
+            await target.getByRole('button', { name: button }).click();
+            await expect(toast(page, 'This report changed since you loaded it — reloading')).toBeVisible();
+            await expect(target.getByText(capitalize(elsewhere), { exact: true })).toBeVisible();
+            const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
+            expect(new URLSearchParams(patch.query).get('status')).toBe('eq.pending');
+            // Nothing was overwritten.
+            expect((await reportBy(mock, 'Roofs blown off')).status).toBe(elsewhere);
+        });
+    }
+
+    test('reset to pending of a report reopened elsewhere shows the server reason and reloads', async ({
+        page,
+        mock,
+        consoleGuard,
+    }) => {
+        consoleGuard.allow(/status of 400 .*\/rest\/v1\/rpc\/reopen_report/);
+        consoleGuard.allow(/Error updating report:/);
+        const row = await reportBy(mock, 'Bush burning near farms');
+        await fetch(`${MOCK_URL}/__mock/table/reports/${row.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ status: 'pending', verification_count: 0 }),
+        });
+        const target = card(page, 'Bush burning near farms');
+        await target.getByRole('button', { name: 'Reset to Pending' }).click();
+        await page.getByRole('dialog', { name: 'Reset to Pending' }).getByRole('button', { name: 'Reset to Pending' }).click();
+        await expect(toast(page, 'Report is already pending')).toBeVisible();
+        // 22023 (invalid state): the list reloads and shows the current status.
+        await expect(target.getByText('Pending', { exact: true })).toBeVisible();
+        await expect(target).not.toContainText('verifications');
     });
 
     test('marks a report verified', async ({ page, mock }) => {

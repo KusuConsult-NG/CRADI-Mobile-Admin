@@ -13,8 +13,8 @@ import { Landmark, Loader2, Plus, Search, Pencil, Trash2, AlertTriangle, Info } 
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 25;
-/** Upper bound for the coverage query (the table holds a few contacts per LGA). */
-const COVERAGE_LIMIT = 5000;
+/** PostgREST caps every response at max-rows (1000 on Supabase): read coverage in pages of this size. */
+const COVERAGE_PAGE_SIZE = 1000;
 const NAME_MAX = 120;
 const ORGANIZATION_MAX = 120;
 
@@ -199,18 +199,27 @@ export default function AuthoritiesPage() {
         if (!user) return;
         let cancelled = false;
         async function loadCoverage() {
-            const { data, error } = await getSupabase()
-                .from(TABLES.AUTHORITIES)
-                .select('coverage_lga, coverage_state')
-                .range(0, COVERAGE_LIMIT - 1);
-            if (cancelled) return;
-            if (error) {
-                console.error('Error fetching authority coverage:', error);
-                setCoverage(null);
-                return;
+            // Page through every row: a single request is silently truncated at
+            // max-rows, which would report covered LGAs as gaps.
+            const rows: { coverage_lga: string | null; coverage_state: string | null }[] = [];
+            for (let from = 0; ; from += COVERAGE_PAGE_SIZE) {
+                const { data, error } = await getSupabase()
+                    .from(TABLES.AUTHORITIES)
+                    .select('coverage_lga, coverage_state')
+                    .order('id', { ascending: true })
+                    .range(from, from + COVERAGE_PAGE_SIZE - 1);
+                if (cancelled) return;
+                if (error) {
+                    console.error('Error fetching authority coverage:', error);
+                    setCoverage(null);
+                    return;
+                }
+                const page = (data ?? []) as typeof rows;
+                rows.push(...page);
+                if (page.length < COVERAGE_PAGE_SIZE) break;
             }
             setCoverage(
-                ((data ?? []) as { coverage_lga: string | null; coverage_state: string | null }[]).map((r) => ({
+                rows.map((r) => ({
                     lga: r.coverage_lga ?? '',
                     state: r.coverage_state?.trim() ?? '',
                 })),
@@ -287,17 +296,18 @@ export default function AuthoritiesPage() {
             const supabase = getSupabase();
             // The same number twice in one (state, LGA) would only be texted once; refuse the
             // duplicate. A legacy row without a state already covers this LGA in every state.
+            // Stored phones may predate normalisation ("0803 123 4567"), so compare
+            // the normalised forms of every contact for this LGA, not the raw column.
             let dup = supabase
                 .from(TABLES.AUTHORITIES)
-                .select('id')
+                .select('id, phone')
                 .eq('coverage_lga', lga)
-                .eq('phone', phone)
-                .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`)
-                .limit(1);
+                .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`);
             if (form.id) dup = dup.neq('id', form.id);
             const { data: dupRows, error: dupError } = await dup;
             if (dupError) throw dupError;
-            if (dupRows && dupRows.length > 0) {
+            const existing = (dupRows ?? []) as { id: string; phone: string | null }[];
+            if (existing.some((r) => normalizeNigerianPhone(r.phone) === phone)) {
                 toast.error(`${phone} is already listed for ${where}.`);
                 return;
             }
