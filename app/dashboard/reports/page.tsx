@@ -7,6 +7,8 @@ import {
     TABLES,
     REPORT_IMAGES_BUCKET,
     REPORT_STATUSES,
+    REPORT_HAZARDS,
+    canonicalHazardName,
     capitalize,
     sanitizeSearch,
     toDate,
@@ -20,6 +22,15 @@ import toast from 'react-hot-toast';
 const PAGE_SIZE = 20;
 
 type StatusFilter = 'all' | ReportStatus;
+
+/** Report `type` of a peer verification request (as opposed to a direct hazard report). */
+const VERIFICATION_REQUEST_TYPE = 'verification_request';
+
+/** Stored hazard_type values matched by the hazard filter: the canonical name plus legacy spellings. */
+function hazardFilterValues(name: string): string[] {
+    const hazard = REPORT_HAZARDS.find((h) => h.name === name);
+    return hazard ? Array.from(new Set([hazard.name, ...hazard.aliases])) : [name];
+}
 
 interface Report {
     id: string;
@@ -37,6 +48,7 @@ interface Report {
     isAlert: boolean;
     escalated: boolean;
     verificationCount: number;
+    isVerificationRequest: boolean;
 }
 
 interface ReportRow {
@@ -72,9 +84,12 @@ function toReport(row: ReportRow): Report {
     const imageUrls = (Array.isArray(row.image_urls) ? row.image_urls : [])
         .map((v) => (typeof v === 'string' ? publicImageUrl(REPORT_IMAGES_BUCKET, v) : null))
         .filter((u): u is string => !!u);
+    const isVerificationRequest = row.type === VERIFICATION_REQUEST_TYPE;
+    // Older rows kept the hazard in `type`; a verification request's type is not a hazard.
+    const rawHazard = str(row.hazard_type) ?? (isVerificationRequest ? undefined : str(row.type));
     return {
         id: row.id,
-        hazardType: str(row.hazard_type) ?? str(row.type) ?? 'Unknown hazard',
+        hazardType: rawHazard ? canonicalHazardName(rawHazard) : 'Unknown hazard',
         severity: str(row.severity),
         description: str(row.description),
         location: str(row.location_details) ?? str(row.location) ?? str(row.address),
@@ -88,6 +103,7 @@ function toReport(row: ReportRow): Report {
         isAlert: row.is_alert === true,
         escalated: row.escalated === true,
         verificationCount: typeof row.verification_count === 'number' ? row.verification_count : 0,
+        isVerificationRequest,
     };
 }
 
@@ -151,6 +167,7 @@ export default function ReportsPage() {
     const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    const [hazardFilter, setHazardFilter] = useState('all');
     const [reloadKey, setReloadKey] = useState(0);
     const [updatingId, setUpdatingId] = useState<string | null>(null);
     const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
@@ -181,6 +198,7 @@ export default function ReportsPage() {
                 .order('id', { ascending: false })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (statusFilter !== 'all') query = query.eq('status', statusFilter);
+            if (hazardFilter !== 'all') query = query.in('hazard_type', hazardFilterValues(hazardFilter));
             if (searchQuery) {
                 const p = `*${searchQuery}*`;
                 query = query.or(
@@ -211,7 +229,7 @@ export default function ReportsPage() {
         return () => {
             cancelled = true;
         };
-    }, [user, page, statusFilter, searchQuery, reloadKey]);
+    }, [user, page, statusFilter, hazardFilter, searchQuery, reloadKey]);
 
     /** Reject and Reset to Pending ask for confirmation first; other actions apply directly. */
     function requestStatusChange(report: Report, newStatus: ReportStatus) {
@@ -334,6 +352,23 @@ export default function ReportsPage() {
                             </option>
                         ))}
                     </select>
+
+                    <select
+                        value={hazardFilter}
+                        onChange={(e) => {
+                            setHazardFilter(e.target.value);
+                            setPage(0);
+                        }}
+                        aria-label="Filter reports by hazard"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                    >
+                        <option value="all">All Hazards</option>
+                        {REPORT_HAZARDS.map((h) => (
+                            <option key={h.name} value={h.name}>
+                                {h.name}
+                            </option>
+                        ))}
+                    </select>
                 </div>
 
                 {/* Reports */}
@@ -378,6 +413,11 @@ export default function ReportsPage() {
                                                     >
                                                         {capitalize(report.status)}
                                                     </span>
+                                                    {report.isVerificationRequest && (
+                                                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-sky-100 text-sky-700">
+                                                            Verification request
+                                                        </span>
+                                                    )}
                                                     {report.isAlert && (
                                                         <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-600 text-white">
                                                             Alert

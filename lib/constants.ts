@@ -8,6 +8,8 @@ export const TABLES = {
     KNOWLEDGE_BASE: 'knowledge_base',
     CONTACTS: 'contacts',
     ALERTS: 'alerts',
+    AUTHORITIES: 'authorities',
+    APP_SETTINGS: 'app_settings',
 } as const;
 
 export const REPORT_IMAGES_BUCKET = 'report-images';
@@ -66,10 +68,10 @@ export const KNOWLEDGE_CATEGORIES: readonly KnowledgeCategory[] = [
     {
         label: 'Extreme Heat',
         hazardType: 'extreme_heat',
-        aliases: ['extreme heat', 'heat', 'heatwave', 'drought'],
+        aliases: ['extreme heat', 'heat', 'heatwave', 'drought', 'extreme temperatures', 'extreme temperature'],
     },
     { label: 'Earthquake', hazardType: 'earthquake', aliases: [] },
-    { label: 'Disease', hazardType: 'disease', aliases: ['epidemic', 'pest/disease'] },
+    { label: 'Disease', hazardType: 'disease', aliases: ['epidemic', 'pest/disease', 'pest outbreak', 'crop disease'] },
     { label: 'Conflict', hazardType: 'conflict', aliases: [] },
     { label: 'Accident', hazardType: 'accident', aliases: [] },
     { label: 'Safety', hazardType: 'safety', aliases: [] },
@@ -82,6 +84,41 @@ export const DEFAULT_KNOWLEDGE_CATEGORY: KnowledgeCategory =
 /** The category whose hazard type is exactly `hazardType`, or null. */
 export function knowledgeCategoryByHazardType(hazardType: string): KnowledgeCategory | null {
     return KNOWLEDGE_CATEGORIES.find((c) => c.hazardType === hazardType) ?? null;
+}
+
+export interface ReportHazard {
+    /** Canonical value written to `reports.hazard_type` by the mobile app. */
+    name: string;
+    /** Other spellings found in older rows (matched case-insensitively for display, exactly for filtering). */
+    aliases: readonly string[];
+}
+
+/**
+ * Report hazard types. Mirrors CRADI-mobile lib/core/constants/hazards.dart
+ * (storedName + aliases); the aliases here are the legacy stored spellings.
+ */
+export const REPORT_HAZARDS: readonly ReportHazard[] = [
+    { name: 'Flooding', aliases: ['Flood', 'Floods', 'flood', 'floods', 'flooding', 'Flash Flood', 'flash flood'] },
+    {
+        name: 'Extreme Temperatures',
+        aliases: ['Extreme Heat', 'Extreme Temperature', 'Heat', 'Heatwave', 'extreme heat', 'extreme temperature', 'extreme temperatures', 'heat', 'heatwave', 'heat wave', 'temp'],
+    },
+    { name: 'Drought', aliases: ['drought'] },
+    { name: 'Windstorms', aliases: ['Windstorm', 'Storm', 'Storms', 'windstorm', 'windstorms', 'storm', 'high winds', 'high wind', 'wind'] },
+    { name: 'Wildfires', aliases: ['Wildfire', 'Fire', 'Bush Fire', 'wildfire', 'wildfires', 'fire', 'bush fire', 'bushfire'] },
+    { name: 'Erosion', aliases: ['erosion', 'Gully Erosion', 'gully erosion', 'landslide'] },
+    { name: 'Pest Outbreak', aliases: ['Pests', 'Pest', 'pest', 'pests', 'pest outbreak', 'pest/disease', 'Pest/Disease'] },
+    { name: 'Crop Disease', aliases: ['Crop Diseases', 'Disease', 'crop disease', 'crop diseases', 'disease'] },
+    { name: 'Conflict', aliases: ['Conflicts', 'Violence', 'conflict', 'conflicts', 'violence'] },
+];
+
+/** Canonical hazard name for a stored (possibly legacy) value, or the value itself when unknown. */
+export function canonicalHazardName(raw: string): string {
+    const value = raw.trim().toLowerCase();
+    const hit = REPORT_HAZARDS.find(
+        (h) => h.name.toLowerCase() === value || h.aliases.some((a) => a.toLowerCase() === value),
+    );
+    return hit ? hit.name : raw;
 }
 
 /** Extracts a human-readable message from an unknown error value. */

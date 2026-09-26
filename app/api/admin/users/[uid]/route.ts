@@ -3,6 +3,8 @@ import type { SupabaseClient, User } from '@supabase/supabase-js';
 import { jsonError, requireAdmin } from '@/lib/supabase-admin';
 import { isUserRole, TABLES, type UserRole } from '@/lib/constants';
 import { isAuthUserConfirmed, isNotFound, UUID_RE } from '@/lib/admin-users';
+import { isLga } from '@/lib/lgas';
+import { isLgaInState } from '@/lib/wards';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -15,10 +17,15 @@ type RouteContext = { params: Promise<{ uid: string }> };
 /** The profile values the admin saw when deciding; the update only applies if they are unchanged. */
 type Expected = { role: string | null; lga: string | null; ward: string | null };
 
+type Location = { state: string; lga: string; ward: string };
+
 type PatchBody =
-    | { approve: true; expected: Expected }
+    | { approve: boolean; expected: Expected }
     | { disabled: boolean }
-    | { role: UserRole; expected: Expected };
+    | { role: UserRole; expected: Expected }
+    | { location: Location; expected: Expected };
+
+const WARD_MAX = 100;
 
 function nullableString(value: unknown): value is string | null {
     return value === null || typeof value === 'string';
@@ -31,20 +38,40 @@ function parseExpected(value: unknown): Expected | null {
     return { role: v.role, lga: v.lga, ward: v.ward };
 }
 
+/** state / lga / ward, trimmed; lga must be a known LGA of state and ward non-empty. */
+function parseLocation(value: unknown): Location | null {
+    if (typeof value !== 'object' || value === null) return null;
+    const v = value as Record<string, unknown>;
+    if (Object.keys(v).sort().join(',') !== 'lga,state,ward') return null;
+    if (typeof v.state !== 'string' || typeof v.lga !== 'string' || typeof v.ward !== 'string') return null;
+    const state = v.state.trim();
+    const lga = v.lga.trim();
+    const ward = v.ward.trim();
+    if (!state || !ward || ward.length > WARD_MAX) return null;
+    if (!isLga(lga) || !isLgaInState(state, lga)) return null;
+    return { state, lga, ward };
+}
+
 /**
  * Accepts exactly one of:
- *  - `{ approve: true, expected: { role, lga, ward } }`
+ *  - `{ approve: boolean, expected: { role, lga, ward } }`   (false = revoke approval)
  *  - `{ disabled: boolean }`
  *  - `{ role: <UserRole>, expected: { role, lga, ward } }`
+ *  - `{ location: { state, lga, ward }, expected: { role, lga, ward } }`
  */
 function parsePatchBody(value: unknown): PatchBody | null {
     if (typeof value !== 'object' || value === null) return null;
     const v = value as Record<string, unknown>;
     const keys = Object.keys(v).sort().join(',');
     if (keys === 'disabled' && typeof v.disabled === 'boolean') return { disabled: v.disabled };
-    if (keys === 'approve,expected' && v.approve === true) {
+    if (keys === 'approve,expected' && typeof v.approve === 'boolean') {
         const expected = parseExpected(v.expected);
-        return expected ? { approve: true, expected } : null;
+        return expected ? { approve: v.approve, expected } : null;
+    }
+    if (keys === 'expected,location') {
+        const expected = parseExpected(v.expected);
+        const location = parseLocation(v.location);
+        return expected && location ? { location, expected } : null;
     }
     if (keys === 'expected,role' && isUserRole(v.role)) {
         const expected = parseExpected(v.expected);
@@ -94,6 +121,19 @@ async function setDisabledFlag(admin: SupabaseClient, uid: string, disabled: boo
 
 const CHANGED_MESSAGE = 'User details changed since you loaded them — reload and review again.';
 
+/** A database trigger refusal (raise ... using errcode = '42501'), e.g. approving an unconfirmed account. */
+function dbRefusal(error: unknown): string | null {
+    if (typeof error !== 'object' || error === null) return null;
+    const e = error as { code?: unknown; message?: unknown };
+    return e.code === '42501' && typeof e.message === 'string' && e.message ? e.message : null;
+}
+
+function pinnedResponse(result: 'ok' | 'not_found' | 'changed') {
+    if (result === 'not_found') return jsonError('User not found', 404);
+    if (result === 'changed') return jsonError(CHANGED_MESSAGE, 409);
+    return NextResponse.json({ success: true });
+}
+
 /**
  * Admin-only user operations. All user mutations go through this route so the
  * profile row and the Supabase Auth account stay in sync:
@@ -101,8 +141,12 @@ const CHANGED_MESSAGE = 'User details changed since you loaded them — reload a
  *                                  Auth account's email or phone is already confirmed; this route
  *                                  never confirms an email itself (that would let anyone who signs
  *                                  up with somebody else's address take it over once approved).
- *  - { disabled: boolean }       → profiles.is_disabled and ban / unban the Auth account
+ *  - { approve: false, expected } → profiles.is_approved = false (revoke approval; access is lost until
+ *                                  approved again)
+ *  - { disabled: boolean }       → profiles.is_disabled and ban / unban the Auth account (the backend
+ *                                  also syncs the ban from the flag; both are idempotent)
  *  - { role, expected }          → profiles.role
+ *  - { location, expected }      → profiles.state / lga / ward (lga must be a known LGA of state)
  * `expected` pins the role / lga / ward the admin reviewed; if they changed meanwhile → 409.
  */
 export async function PATCH(req: NextRequest, ctx: RouteContext) {
@@ -121,11 +165,20 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
     }
     if (!body) return jsonError('Invalid request body', 400);
 
-    if (uid === callerId && (('disabled' in body && body.disabled) || ('role' in body && body.role !== 'admin'))) {
-        return jsonError('You cannot block or demote your own admin account', 400);
+    if (
+        uid === callerId &&
+        (('disabled' in body && body.disabled) ||
+            ('role' in body && body.role !== 'admin') ||
+            ('approve' in body && !body.approve))
+    ) {
+        return jsonError('You cannot block, demote or revoke approval of your own admin account', 400);
     }
 
     try {
+        if ('approve' in body && !body.approve) {
+            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { is_approved: false }, body.expected));
+        }
+
         if ('approve' in body) {
             const { data, error } = await admin.auth.admin.getUserById(uid);
             if (error) {
@@ -138,22 +191,24 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
                     409,
                 );
             }
-            const result = await pinnedProfileUpdate(
-                admin,
-                uid,
-                { is_approved: true, is_verified: true },
-                body.expected,
-            );
-            if (result === 'not_found') return jsonError('User not found', 404);
-            if (result === 'changed') return jsonError(CHANGED_MESSAGE, 409);
-            return NextResponse.json({ success: true });
+            try {
+                return pinnedResponse(
+                    await pinnedProfileUpdate(admin, uid, { is_approved: true, is_verified: true }, body.expected),
+                );
+            } catch (error) {
+                // The database refuses approving an unconfirmed account (profiles_guard_approval).
+                const refusal = dbRefusal(error);
+                if (refusal) return jsonError(refusal, 409);
+                throw error;
+            }
         }
 
         if ('role' in body) {
-            const result = await pinnedProfileUpdate(admin, uid, { role: body.role }, body.expected);
-            if (result === 'not_found') return jsonError('User not found', 404);
-            if (result === 'changed') return jsonError(CHANGED_MESSAGE, 409);
-            return NextResponse.json({ success: true });
+            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { role: body.role }, body.expected));
+        }
+
+        if ('location' in body) {
+            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { ...body.location }, body.expected));
         }
 
         if (body.disabled) {

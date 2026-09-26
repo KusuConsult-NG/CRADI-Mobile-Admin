@@ -16,7 +16,8 @@ import {
 import { adminApi } from '@/lib/admin-api';
 import Pagination from '@/components/Pagination';
 import Modal from '@/components/Modal';
-import { Users as UsersIcon, Loader2, Search, CheckCircle, Ban, Trash2, UserCog } from 'lucide-react';
+import { STATES, lgasForState, wardsFor } from '@/lib/wards';
+import { Users as UsersIcon, Loader2, Search, CheckCircle, Ban, Trash2, UserCog, MapPin, UserX } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 25;
@@ -77,6 +78,42 @@ interface ConfirmState {
     onConfirm: () => Promise<void>;
     isDangerous?: boolean;
     confirmLabel?: string;
+}
+
+interface LocationForm {
+    user: AppUser;
+    state: string;
+    lga: string;
+    /** A ward from the list, or OTHER_WARD to type one. */
+    ward: string;
+    otherWard: string;
+}
+
+const OTHER_WARD = '__other__';
+const WARD_MAX = 100;
+
+const SELECT_CLASS =
+    'w-full px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none';
+
+/** Pre-fills the location dialog with the user's current values where they are valid. */
+function initialLocation(u: AppUser): LocationForm {
+    const state = u.state && STATES.includes(u.state) ? u.state : '';
+    const lga = state && u.lga && lgasForState(state).includes(u.lga) ? u.lga : '';
+    const wards = state && lga ? wardsFor(state, lga) : [];
+    let ward = '';
+    let otherWard = '';
+    if (lga && u.ward) {
+        if (wards.includes(u.ward)) ward = u.ward;
+        else {
+            ward = OTHER_WARD;
+            otherWard = u.ward;
+        }
+    }
+    return { user: u, state, lga, ward, otherWard };
+}
+
+function locationWard(form: LocationForm): string {
+    return (form.ward === OTHER_WARD ? form.otherWard : form.ward).trim();
 }
 
 const CLOSED_MODAL: ConfirmState = {
@@ -163,6 +200,7 @@ export default function UsersPage() {
     const [confirmBusy, setConfirmBusy] = useState(false);
     const [roleModal, setRoleModal] = useState<{ user: AppUser; role: UserRole } | null>(null);
     const [confirmed, setConfirmed] = useState<ConfirmedMap>({});
+    const [locationModal, setLocationModal] = useState<LocationForm | null>(null);
 
     // Debounce the search box; a new search starts again at the first page.
     useEffect(() => {
@@ -284,7 +322,81 @@ export default function UsersPage() {
                     toast.success('User approved successfully!');
                 } catch (error) {
                     console.error('Error approving user:', error);
-                    toast.error(`Failed to approve user: ${errorMessage(error)}`);
+                    const message = errorMessage(error);
+                    // The server / database refuses accounts without a confirmed email or phone.
+                    if (/not confirmed|has not confirmed/i.test(message)) {
+                        setConfirmed((prev) => ({ ...prev, [target.id]: false }));
+                    }
+                    toast.error(`Failed to approve user: ${message}`);
+                } finally {
+                    setActionLoading(null);
+                }
+            },
+        });
+    }
+
+    function handleRevokeApproval(target: AppUser) {
+        setConfirmModal({
+            isOpen: true,
+            title: 'Revoke Approval',
+            message: `Revoke approval for ${target.name || target.email || 'this user'}? They will lose access to the platform (their role no longer applies) and return to pending until approved again. They can still sign in.`,
+            isDangerous: true,
+            confirmLabel: 'Revoke',
+            onConfirm: async () => {
+                setActionLoading(target.id);
+                try {
+                    await userApi(target.id, {
+                        method: 'PATCH',
+                        body: { approve: false, expected: target.loaded },
+                    });
+                    toast.success('Approval revoked');
+                    if (statusFilter === 'approved') {
+                        if (users.length === 1 && page > 0) setPage((p) => p - 1);
+                        else setReloadKey((k) => k + 1);
+                    } else {
+                        patchLocalUser(target.id, { isApproved: false });
+                    }
+                } catch (error) {
+                    console.error('Error revoking approval:', error);
+                    toast.error(`Failed to revoke approval: ${errorMessage(error)}`);
+                } finally {
+                    setActionLoading(null);
+                }
+            },
+        });
+    }
+
+    function requestLocationChange() {
+        if (!locationModal) return;
+        const { user: target, state, lga } = locationModal;
+        const ward = locationWard(locationModal);
+        if (!state || !lga || !ward) {
+            toast.error('Choose a state, LGA and ward.');
+            return;
+        }
+        if (ward.length > WARD_MAX) {
+            toast.error(`Ward name is too long (max ${WARD_MAX} characters).`);
+            return;
+        }
+        setLocationModal(null);
+        if (state === target.state && lga === target.lga && ward === target.ward) return;
+        setConfirmModal({
+            isOpen: true,
+            title: 'Change Location',
+            message: `Move ${target.name || target.email || 'this user'} from ${formatLocation(target)} to ${ward}, ${lga}, ${state}? They will see and verify reports for the new area from now on.`,
+            confirmLabel: 'Change location',
+            onConfirm: async () => {
+                setActionLoading(target.id);
+                try {
+                    await userApi(target.id, {
+                        method: 'PATCH',
+                        body: { location: { state, lga, ward }, expected: target.loaded },
+                    });
+                    patchLocalUser(target.id, { state, lga, ward, loaded: { ...target.loaded, lga, ward } });
+                    toast.success('Location updated');
+                } catch (error) {
+                    console.error('Error changing location:', error);
+                    toast.error(`Failed to change location: ${errorMessage(error)}`);
                 } finally {
                     setActionLoading(null);
                 }
@@ -511,8 +623,28 @@ export default function UsersPage() {
                                                                         <CheckCircle className="w-4 h-4" />
                                                                     </button>
                                                                 )}
+                                                                <button
+                                                                    onClick={() => setLocationModal(initialLocation(u))}
+                                                                    disabled={actionLoading !== null}
+                                                                    className="p-2 text-teal-600 hover:bg-teal-50 rounded-lg transition-colors disabled:opacity-50"
+                                                                    title="Change location"
+                                                                    aria-label={`Change location of ${u.name || u.email || 'user'}`}
+                                                                >
+                                                                    <MapPin className="w-4 h-4" />
+                                                                </button>
                                                                 {!isSelf && (
                                                                     <>
+                                                                        {u.isApproved && !u.isDisabled && (
+                                                                            <button
+                                                                                onClick={() => handleRevokeApproval(u)}
+                                                                                disabled={actionLoading !== null}
+                                                                                className="p-2 text-amber-600 hover:bg-amber-50 rounded-lg transition-colors disabled:opacity-50"
+                                                                                title="Revoke approval"
+                                                                                aria-label={`Revoke approval of ${u.name || u.email || 'user'}`}
+                                                                            >
+                                                                                <UserX className="w-4 h-4" />
+                                                                            </button>
+                                                                        )}
                                                                         <button
                                                                             onClick={() =>
                                                                                 setRoleModal({
@@ -646,6 +778,150 @@ export default function UsersPage() {
                             Save Role
                         </button>
                     </div>
+                </Modal>
+            )}
+
+            {/* Location Modal */}
+            {locationModal && (
+                <Modal
+                    title="Change Location"
+                    titleClassName="text-xl font-bold mb-2 text-gray-900"
+                    onClose={() => setLocationModal(null)}
+                    className="max-w-md w-full p-6 max-h-[90vh] overflow-y-auto"
+                >
+                    <form
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            requestLocationChange();
+                        }}
+                    >
+                        <p className="text-gray-600 mb-4 leading-relaxed">
+                            {locationModal.user.name || locationModal.user.email || 'This user'} is currently in{' '}
+                            {formatLocation(locationModal.user)}. Reports and peer verification are scoped to the
+                            user&apos;s LGA and ward.
+                        </p>
+                        <div className="space-y-4 mb-6">
+                            <div>
+                                <label htmlFor="location-state" className="block text-sm font-medium text-gray-700 mb-1">
+                                    State
+                                </label>
+                                <select
+                                    id="location-state"
+                                    required
+                                    value={locationModal.state}
+                                    onChange={(e) => {
+                                        const state = e.target.value;
+                                        setLocationModal((prev) =>
+                                            prev ? { ...prev, state, lga: '', ward: '', otherWard: '' } : prev,
+                                        );
+                                    }}
+                                    className={SELECT_CLASS}
+                                >
+                                    <option value="">Select a state…</option>
+                                    {STATES.map((s) => (
+                                        <option key={s} value={s}>
+                                            {s}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label htmlFor="location-lga" className="block text-sm font-medium text-gray-700 mb-1">
+                                    LGA
+                                </label>
+                                <select
+                                    id="location-lga"
+                                    required
+                                    disabled={!locationModal.state}
+                                    value={locationModal.lga}
+                                    onChange={(e) => {
+                                        const lga = e.target.value;
+                                        setLocationModal((prev) =>
+                                            prev ? { ...prev, lga, ward: '', otherWard: '' } : prev,
+                                        );
+                                    }}
+                                    className={`${SELECT_CLASS} disabled:bg-gray-100 disabled:text-gray-500`}
+                                >
+                                    <option value="">Select an LGA…</option>
+                                    {locationModal.state &&
+                                        lgasForState(locationModal.state).map((l) => (
+                                            <option key={l} value={l}>
+                                                {l}
+                                            </option>
+                                        ))}
+                                </select>
+                            </div>
+                            <div>
+                                <label htmlFor="location-ward" className="block text-sm font-medium text-gray-700 mb-1">
+                                    Ward
+                                </label>
+                                <select
+                                    id="location-ward"
+                                    required
+                                    disabled={!locationModal.lga}
+                                    value={locationModal.ward}
+                                    onChange={(e) => {
+                                        const ward = e.target.value;
+                                        setLocationModal((prev) => (prev ? { ...prev, ward } : prev));
+                                    }}
+                                    className={`${SELECT_CLASS} disabled:bg-gray-100 disabled:text-gray-500`}
+                                >
+                                    <option value="">Select a ward…</option>
+                                    {locationModal.state &&
+                                        locationModal.lga &&
+                                        wardsFor(locationModal.state, locationModal.lga).map((w) => (
+                                            <option key={w} value={w}>
+                                                {w}
+                                            </option>
+                                        ))}
+                                    {locationModal.lga && <option value={OTHER_WARD}>Other (type the name)…</option>}
+                                </select>
+                            </div>
+                            {locationModal.ward === OTHER_WARD && (
+                                <div>
+                                    <label
+                                        htmlFor="location-other-ward"
+                                        className="block text-sm font-medium text-gray-700 mb-1"
+                                    >
+                                        Ward name
+                                    </label>
+                                    <input
+                                        id="location-other-ward"
+                                        type="text"
+                                        required
+                                        maxLength={WARD_MAX}
+                                        value={locationModal.otherWard}
+                                        onChange={(e) => {
+                                            const otherWard = e.target.value;
+                                            setLocationModal((prev) => (prev ? { ...prev, otherWard } : prev));
+                                        }}
+                                        aria-describedby="location-other-ward-hint"
+                                        className={SELECT_CLASS}
+                                    />
+                                    <p id="location-other-ward-hint" className="mt-1 text-xs text-gray-500">
+                                        Only for wards missing from the INEC list; spell it exactly as the user&apos;s
+                                        reports do, since matching is by name.
+                                    </p>
+                                </div>
+                            )}
+                        </div>
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setLocationModal(null)}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                disabled={!locationModal.state || !locationModal.lga || !locationWard(locationModal)}
+                                className="px-4 py-2 rounded-lg font-medium transition-colors bg-gradient-to-r from-[#e85d04] to-[#dc2f02] text-white hover:opacity-90 disabled:opacity-50"
+                            >
+                                Continue
+                            </button>
+                        </div>
+                    </form>
                 </Modal>
             )}
         </div>

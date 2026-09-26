@@ -13,6 +13,8 @@ const NAV_LINKS = [
     { href: '/dashboard/reports', label: 'Reports' },
     { href: '/dashboard/knowledge', label: 'Knowledge' },
     { href: '/dashboard/alerts', label: 'Alerts' },
+    { href: '/dashboard/authorities', label: 'Authorities' },
+    { href: '/dashboard/settings', label: 'Settings' },
 ];
 
 function isActive(pathname: string, href: string): boolean {

@@ -1,54 +1,11 @@
-// Generated from CRADI-mobile lib/core/data/mvp_locations_data.dart — keep in sync.
-export const LGAS: readonly string[] = [
-    'Ado',
-    'Agatu',
-    'Akwanga',
-    'Apa',
-    'Awe',
-    'Barkin Ladi',
-    'Bassa',
-    'Bokkos',
-    'Buruku',
-    'Doma',
-    'Gboko',
-    'Guma',
-    'Gwer East',
-    'Gwer West',
-    'Jos East',
-    'Jos North',
-    'Jos South',
-    'Kanam',
-    'Kanke',
-    'Karu',
-    'Katsina-Ala',
-    'Keana',
-    'Keffi',
-    'Kokona',
-    'Konshisha',
-    'Kwande',
-    'Lafia',
-    'Langtang North',
-    'Langtang South',
-    'Logo',
-    'Makurdi',
-    'Mangu',
-    'Mikang',
-    'Nasarawa',
-    'Nasarawa Egon',
-    'Obi',
-    'Ogbadibo',
-    'Ohimini',
-    'Oju',
-    'Okpokwu',
-    'Oturkpo',
-    'Pankshin',
-    'Riyom',
-    'Shendam',
-    'Tarka',
-    'Toto',
-    'Ukum',
-    'Ushongo',
-    'Vandeikya',
-    'Wamba',
-    'Wase',
-] as const;
+// Derived from lib/wards.ts (generated from CRADI-mobile lib/core/data/mvp_locations_data.dart).
+import { LOCATIONS } from '@/lib/wards';
+
+/** Every LGA name covered by the app (unique, sorted). Names match `reports.lga` exactly. */
+export const LGAS: readonly string[] = Array.from(new Set(LOCATIONS.map((l) => l.lga))).sort((a, b) =>
+    a.localeCompare(b),
+);
+
+export function isLga(value: unknown): value is string {
+    return typeof value === 'string' && LGAS.includes(value);
+}

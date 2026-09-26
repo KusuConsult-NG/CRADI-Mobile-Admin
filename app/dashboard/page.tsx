@@ -13,6 +13,8 @@ import {
     Clock,
     CheckCircle2,
     Megaphone,
+    Landmark,
+    Settings,
 } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -263,6 +265,26 @@ export default function DashboardPage() {
                                     <Megaphone className="w-5 h-5 text-gray-600 group-hover:text-rose-600" />
                                     <span className="font-medium text-gray-700 group-hover:text-rose-700">
                                         Community Alerts
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/authorities"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
+                                >
+                                    <Landmark className="w-5 h-5 text-gray-600 group-hover:text-emerald-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-emerald-700">
+                                        SMS Authorities
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/settings"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-slate-500 hover:bg-slate-50 transition-all group"
+                                >
+                                    <Settings className="w-5 h-5 text-gray-600 group-hover:text-slate-700" />
+                                    <span className="font-medium text-gray-700 group-hover:text-slate-800">
+                                        App Settings
                                     </span>
                                 </Link>
                             </div>
