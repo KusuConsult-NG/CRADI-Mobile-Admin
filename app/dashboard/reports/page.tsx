@@ -201,26 +201,30 @@ export default function ReportsPage() {
         if (updatingId || !user) return;
         setUpdatingId(report.id);
         try {
-            const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
-            const stampColumn = STATUS_TIMESTAMP[newStatus];
-            if (stampColumn) update[stampColumn] = new Date().toISOString();
             if (newStatus === 'pending') {
-                // Back to the start of the workflow: clear the previous decision.
-                Object.assign(update, { verified_at: null, approved_at: null, rejected_at: null, rejection_reason: null });
+                // Reopening must also clear peer votes and reschedule escalation,
+                // otherwise the report can never be verified again.
+                const { error } = await getSupabase().rpc('reopen_report', { p_report_id: report.id });
+                if (error) throw error;
+            } else {
+                const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
+                const stampColumn = STATUS_TIMESTAMP[newStatus];
+                if (stampColumn) update[stampColumn] = new Date().toISOString();
+
+                const { data, error } = await getSupabase()
+                    .from(TABLES.REPORTS)
+                    .update(update)
+                    .eq('id', report.id)
+                    .select('id');
+                if (error) throw error;
+                // RLS filters rows silently: no row back means the update was not allowed.
+                if (!data || data.length === 0) throw new Error('Report not found or not permitted');
             }
 
-            const { data, error } = await getSupabase()
-                .from(TABLES.REPORTS)
-                .update(update)
-                .eq('id', report.id)
-                .select('id');
-            if (error) throw error;
-            // RLS filters rows silently: no row back means the update was not allowed.
-            if (!data || data.length === 0) throw new Error('Report not found or not permitted');
-
             toast.success(`Report marked as ${newStatus}`);
-            if (statusFilter !== 'all' && statusFilter !== newStatus) {
-                // No longer matches the active filter: reload the current page.
+            if (newStatus === 'pending' || (statusFilter !== 'all' && statusFilter !== newStatus)) {
+                // Reopen resets several columns, or the row no longer matches the
+                // active filter: reload the current page.
                 if (reports.length === 1 && page > 0) setPage((p) => p - 1);
                 else setReloadKey((k) => k + 1);
             } else {
@@ -228,7 +232,12 @@ export default function ReportsPage() {
             }
         } catch (error) {
             console.error('Error updating report:', error);
-            toast.error('Failed to update report');
+            // Database permission errors carry a readable reason (e.g. own report).
+            const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+            const message = error instanceof Error || (typeof error === 'object' && error && 'message' in error)
+                ? String((error as { message: unknown }).message)
+                : '';
+            toast.error(code === '42501' && message ? message : 'Failed to update report');
         } finally {
             setUpdatingId(null);
         }

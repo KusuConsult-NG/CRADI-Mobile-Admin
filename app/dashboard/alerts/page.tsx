@@ -7,6 +7,7 @@ import { TABLES, ALERT_SEVERITIES, capitalize, toDate, type AlertSeverity } from
 import Pagination from '@/components/Pagination';
 import { Megaphone, Loader2, Plus, MapPin, Clock, BellOff } from 'lucide-react';
 import toast from 'react-hot-toast';
+import { LGAS } from '@/lib/lgas';
 
 const PAGE_SIZE = 20;
 
@@ -40,7 +41,7 @@ interface AlertForm {
 }
 
 // Same suggestions as the mobile admin alerts screen; any LGA name can be typed.
-const LGA_SUGGESTIONS = ['All', 'Makurdi', 'Otukpo', 'Gboko', 'Katsina-Ala', 'Lafia', 'Nasarawa', 'Akwanga', 'Keffi'];
+const LGA_SUGGESTIONS = ['All', ...LGAS];
 
 const EMPTY_FORM: AlertForm = { title: '', message: '', severity: 'info', targetLga: 'All' };
 
