@@ -19,7 +19,7 @@ const FOCUSABLE_SELECTOR = `${FIELD_SELECTOR}, button:not([disabled]), a[href]`;
 
 /**
  * Accessible modal dialog: role="dialog" + aria-modal, labelled by its title,
- * closes on Escape, moves focus to the first form field (or first button) when
+ * closes on Escape, keeps Tab focus inside, moves focus to the first form field (or first button) when
  * opened and restores it to the previously focused element when closed.
  */
 export default function Modal({
@@ -51,6 +51,27 @@ export default function Modal({
             if (e.key === 'Escape' && !closeDisabledRef.current) {
                 e.stopPropagation();
                 onCloseRef.current();
+                return;
+            }
+            // Keep Tab / Shift+Tab inside the dialog (aria-modal).
+            if (e.key === 'Tab' && panel) {
+                const focusable = Array.from(panel.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR));
+                if (focusable.length === 0) {
+                    e.preventDefault();
+                    panel.focus();
+                    return;
+                }
+                const firstEl = focusable[0];
+                const lastEl = focusable[focusable.length - 1];
+                const active = document.activeElement;
+                const outside = !(active instanceof Node) || !panel.contains(active);
+                if (e.shiftKey && (active === firstEl || active === panel || outside)) {
+                    e.preventDefault();
+                    lastEl.focus();
+                } else if (!e.shiftKey && (active === lastEl || outside)) {
+                    e.preventDefault();
+                    firstEl.focus();
+                }
             }
         }
         document.addEventListener('keydown', onKeyDown);
