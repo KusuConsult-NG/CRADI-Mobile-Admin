@@ -2,13 +2,14 @@
 
 /**
  * Calls an authenticated admin API route. Throws an Error with the server's
- * (sanitised) error message when the response is not ok.
+ * (sanitised) error message when the response is not ok; otherwise returns the
+ * parsed JSON body (or null when there is none).
  */
 export async function adminApi(
     getAccessToken: () => Promise<string>,
     path: string,
     init: { method: 'PATCH' | 'DELETE' | 'POST'; body?: unknown },
-): Promise<void> {
+): Promise<unknown> {
     const token = await getAccessToken();
     const res = await fetch(path, {
         method: init.method,
@@ -31,5 +32,11 @@ export async function adminApi(
             // Non-JSON response; keep the generic message.
         }
         throw new Error(message);
+    }
+
+    try {
+        return (await res.json()) as unknown;
+    } catch {
+        return null;
     }
 }

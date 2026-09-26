@@ -65,6 +65,23 @@ async function main() {
         throw new Error(`No user with email ${email}. The user must sign up (mobile app or Supabase dashboard) first.`);
     }
 
+    // Only promote an account whose owner has proven control of the email/phone;
+    // otherwise anyone could pre-register a victim's address and inherit admin.
+    const { data: authData, error: authError } = await supabase.auth.admin.getUserById(userId);
+    if (authError || !authData?.user) {
+        throw new Error(`Could not load auth user ${userId}: ${authError?.message ?? 'not found'}`);
+    }
+    const authUser = authData.user;
+    if (!authUser.email_confirmed_at && !authUser.phone_confirmed_at) {
+        throw new Error(
+            `User ${email} (id: ${userId}) has not confirmed their email address or phone. ` +
+                'Ask them to confirm it first; refusing to grant admin to an unconfirmed account.',
+        );
+    }
+    if ((authUser.email || '').trim().toLowerCase() !== email) {
+        throw new Error(`Auth user ${userId} has email ${authUser.email ?? '(none)'}, not ${email}; refusing.`);
+    }
+
     const { data, error } = await supabase
         .from('profiles')
         .update({ role: 'admin', is_approved: true, is_disabled: false })

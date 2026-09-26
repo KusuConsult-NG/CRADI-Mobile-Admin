@@ -44,7 +44,12 @@ interface AppUser {
     isApproved: boolean;
     isDisabled: boolean;
     createdAt: Date | null;
+    /** Values as loaded; sent back so the server only applies a change if they are unchanged. */
+    loaded: { role: string | null; lga: string | null; ward: string | null };
 }
+
+/** Auth account has a confirmed email/phone: true / false, or null when unknown. */
+type ConfirmedMap = Record<string, boolean | null>;
 
 interface ProfileRow {
     id: string;
@@ -100,6 +105,7 @@ function toAppUser(row: ProfileRow): AppUser {
         isApproved: row.is_approved === true,
         isDisabled: row.is_disabled === true,
         createdAt: toDate(row.created_at),
+        loaded: { role: row.role, lga: row.lga, ward: row.ward },
     };
 }
 
@@ -107,6 +113,17 @@ function formatLocation(u: AppUser): string {
     const parts = [u.ward, u.lga, u.state].filter(Boolean);
     if (parts.length > 0) return parts.join(', ');
     return u.address || 'Not provided';
+}
+
+function UnconfirmedBadge() {
+    return (
+        <span
+            className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-gray-100 text-gray-700"
+            title="The user has not confirmed their email address or phone. They cannot be approved until they do."
+        >
+            Email not confirmed
+        </span>
+    );
 }
 
 function StatusBadge({ user }: { user: AppUser }) {
@@ -145,6 +162,7 @@ export default function UsersPage() {
     const [confirmModal, setConfirmModal] = useState<ConfirmState>(CLOSED_MODAL);
     const [confirmBusy, setConfirmBusy] = useState(false);
     const [roleModal, setRoleModal] = useState<{ user: AppUser; role: UserRole } | null>(null);
+    const [confirmed, setConfirmed] = useState<ConfirmedMap>({});
 
     // Debounce the search box; a new search starts again at the first page.
     useEffect(() => {
@@ -194,14 +212,31 @@ export default function UsersPage() {
                 }
                 setUsers(rows.map(toAppUser));
                 setTotalCount(count ?? null);
+                void loadConfirmation(rows.map((r) => r.id));
             }
             setLoading(false);
+        }
+        async function loadConfirmation(ids: string[]) {
+            if (ids.length === 0) return;
+            try {
+                const data = await adminApi(getAccessToken, '/api/admin/users/confirmation', {
+                    method: 'POST',
+                    body: { ids },
+                });
+                const map =
+                    typeof data === 'object' && data !== null && 'confirmed' in data
+                        ? ((data as { confirmed: unknown }).confirmed as ConfirmedMap)
+                        : null;
+                if (!cancelled && map && typeof map === 'object') setConfirmed((prev) => ({ ...prev, ...map }));
+            } catch (error) {
+                console.error('Error fetching confirmation status:', error);
+            }
         }
         void load();
         return () => {
             cancelled = true;
         };
-    }, [user, page, searchQuery, statusFilter, reloadKey]);
+    }, [user, page, searchQuery, statusFilter, reloadKey, getAccessToken]);
 
     const patchLocalUser = useCallback((id: string, patch: Partial<AppUser>) => {
         setUsers((prev) => prev.map((u) => (u.id === id ? { ...u, ...patch } : u)));
@@ -225,7 +260,7 @@ export default function UsersPage() {
     }, [confirmBusy, confirmModal.onConfirm]);
 
     const userApi = useCallback(
-        (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }) =>
+        (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }): Promise<unknown> =>
             adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init),
         [getAccessToken],
     );
@@ -241,7 +276,10 @@ export default function UsersPage() {
             onConfirm: async () => {
                 setActionLoading(target.id);
                 try {
-                    await userApi(target.id, { method: 'PATCH', body: { approve: true } });
+                    await userApi(target.id, {
+                        method: 'PATCH',
+                        body: { approve: true, expected: target.loaded },
+                    });
                     patchLocalUser(target.id, { isApproved: true, isVerified: true });
                     toast.success('User approved successfully!');
                 } catch (error) {
@@ -314,8 +352,8 @@ export default function UsersPage() {
         if (role === target.role) return;
         setActionLoading(target.id);
         try {
-            await userApi(target.id, { method: 'PATCH', body: { role } });
-            patchLocalUser(target.id, { role });
+            await userApi(target.id, { method: 'PATCH', body: { role, expected: target.loaded } });
+            patchLocalUser(target.id, { role, loaded: { ...target.loaded, role } });
             toast.success(`Role changed to ${ROLE_LABELS[role]}`);
         } catch (error) {
             console.error('Error changing role:', error);
@@ -447,7 +485,10 @@ export default function UsersPage() {
                                                         {isUserRole(u.role) ? ROLE_LABELS[u.role] : u.role || 'User'}
                                                     </td>
                                                     <td className="px-6 py-4">
-                                                        <StatusBadge user={u} />
+                                                        <div className="flex flex-wrap gap-1">
+                                                            <StatusBadge user={u} />
+                                                            {confirmed[u.id] === false && <UnconfirmedBadge />}
+                                                        </div>
                                                     </td>
                                                     <td className="px-6 py-4 text-sm text-gray-700">
                                                         {u.createdAt ? u.createdAt.toLocaleDateString() : '—'}

@@ -74,6 +74,14 @@ railway.json                        # Railway build/deploy config
   `/api/admin/users/[uid]`, which verifies the Supabase access token, re-checks
   the caller's profile, then uses the service role key. Admins cannot block,
   demote or delete themselves.
+- Approval never confirms an email: it is refused (409) until the user has
+  confirmed their email or phone, and the users list shows an "Email not
+  confirmed" badge (from `POST /api/admin/users/confirmation`). Approve and role
+  changes send the role / LGA / ward the admin reviewed and fail with 409 if the
+  profile changed in the meantime.
+- `next.config.ts` sets a Content-Security-Policy (Supabase origin taken from
+  `NEXT_PUBLIC_SUPABASE_URL` at build time — rebuild if it changes) plus
+  X-Frame-Options, Referrer-Policy, X-Content-Type-Options and Permissions-Policy.
 - The service role key is server-only; never commit it or prefix it with `NEXT_PUBLIC_`.
 
 ## Scripts

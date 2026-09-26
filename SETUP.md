@@ -41,6 +41,7 @@ npm run set:admin -- admin@example.org
 
 This sets `role = 'admin'`, `is_approved = true`, `is_disabled = false` on the
 user's `profiles` row (and clears any ban). Sign in with that account.
+The script refuses accounts whose email (or phone) has not been confirmed.
 
 ## 4. Run locally
 
