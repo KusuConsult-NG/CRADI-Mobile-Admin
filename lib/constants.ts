@@ -10,6 +10,7 @@ export const TABLES = {
     ALERTS: 'alerts',
     AUTHORITIES: 'authorities',
     APP_SETTINGS: 'app_settings',
+    NEWS_LINKS: 'news_links',
 } as const;
 
 export const REPORT_IMAGES_BUCKET = 'report-images';

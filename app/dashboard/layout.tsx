@@ -12,6 +12,7 @@ const NAV_LINKS = [
     { href: '/dashboard/users', label: 'Users' },
     { href: '/dashboard/reports', label: 'Reports' },
     { href: '/dashboard/knowledge', label: 'Knowledge' },
+    { href: '/dashboard/news', label: 'News' },
     { href: '/dashboard/alerts', label: 'Alerts' },
     { href: '/dashboard/authorities', label: 'Authorities' },
     { href: '/dashboard/settings', label: 'Settings' },

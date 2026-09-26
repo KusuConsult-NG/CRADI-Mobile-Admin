@@ -11,7 +11,8 @@ type SettingDef =
     | { key: string; label: string; help: string; kind: 'int'; min: number; max: number; defaultValue: number; unit?: string }
     | { key: string; label: string; help: string; kind: 'bool'; defaultValue: boolean }
     | { key: string; label: string; help: string; kind: 'semver'; defaultValue: string }
-    | { key: string; label: string; help: string; kind: 'text'; maxLength: number; defaultValue: string };
+    | { key: string; label: string; help: string; kind: 'text'; maxLength: number; defaultValue: string }
+    | { key: string; label: string; help: string; kind: 'email'; defaultValue: string };
 
 /**
  * The live app_settings keys (read by the database, the backend or the mobile
@@ -80,12 +81,22 @@ const SETTINGS: readonly SettingDef[] = [
         maxLength: 200,
         defaultValue: '',
     },
+    {
+        key: 'support_email',
+        label: 'Support email',
+        help: 'The address shown in the mobile app’s Help & Support screen for users to contact support.',
+        kind: 'email',
+        defaultValue: 'support@cradi.org',
+    },
 ];
 
 const SETTING_KEYS = SETTINGS.map((s) => s.key);
 const SEMVER_RE = /^\d{1,4}\.\d{1,4}\.\d{1,6}$/;
+/** One address, no spaces, a dot in the domain (what a mail app can open). */
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const EMAIL_MAX = 254;
 
-/** Form value per key: text for int / semver / text fields, boolean for toggles. */
+/** Form value per key: text for int / semver / email / text fields, boolean for toggles. */
 type Draft = Record<string, string | boolean>;
 
 interface SettingRow {
@@ -132,6 +143,12 @@ function parseValue(def: SettingDef, raw: string | boolean): { value: number | b
         case 'semver': {
             const text = String(raw).trim();
             if (!SEMVER_RE.test(text)) return { error: 'Use the form MAJOR.MINOR.PATCH, e.g. 1.0.14.' };
+            return { value: text };
+        }
+        case 'email': {
+            const text = String(raw).trim();
+            if (!text) return { error: 'Enter an email address.' };
+            if (text.length > EMAIL_MAX || !EMAIL_RE.test(text)) return { error: 'Enter a valid email address, e.g. support@cradi.org.' };
             return { value: text };
         }
         case 'text': {
@@ -340,12 +357,13 @@ export default function SettingsPage() {
                                                     <div className="flex items-center gap-3">
                                                         <input
                                                             id={id}
-                                                            type={def.kind === 'int' ? 'number' : 'text'}
-                                                            inputMode={def.kind === 'int' ? 'numeric' : 'decimal'}
+                                                            type={def.kind === 'int' ? 'number' : def.kind === 'email' ? 'email' : 'text'}
+                                                            inputMode={def.kind === 'int' ? 'numeric' : def.kind === 'email' ? 'email' : 'decimal'}
+                                                            maxLength={def.kind === 'email' ? EMAIL_MAX : undefined}
                                                             min={def.kind === 'int' ? def.min : undefined}
                                                             max={def.kind === 'int' ? def.max : undefined}
                                                             step={def.kind === 'int' ? 1 : undefined}
-                                                            placeholder={def.kind === 'semver' ? '1.0.14' : undefined}
+                                                            placeholder={def.kind === 'semver' ? '1.0.14' : def.kind === 'email' ? 'support@cradi.org' : undefined}
                                                             value={String(value)}
                                                             onChange={(e) => setValue(def.key, e.target.value)}
                                                             aria-describedby={describedBy}

@@ -36,6 +36,7 @@ test('every dashboard page renders without console errors or CSP violations', as
         ['Users', 'User Management'],
         ['Reports', 'Report Management'],
         ['Knowledge', 'Knowledge Base'],
+        ['News', 'News Links'],
         ['Alerts', 'Community Alerts'],
         ['Authorities', 'Authorities'],
         ['Settings', 'App Settings'],

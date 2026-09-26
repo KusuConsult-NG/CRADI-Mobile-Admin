@@ -15,6 +15,7 @@ import {
     Megaphone,
     Landmark,
     Settings,
+    Newspaper,
 } from 'lucide-react';
 import Link from 'next/link';
 import toast from 'react-hot-toast';
@@ -255,6 +256,16 @@ export default function DashboardPage() {
                                     <BookOpen className="w-5 h-5 text-gray-600 group-hover:text-indigo-600" />
                                     <span className="font-medium text-gray-700 group-hover:text-indigo-700">
                                         Knowledge Base
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/news"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-sky-500 hover:bg-sky-50 transition-all group"
+                                >
+                                    <Newspaper className="w-5 h-5 text-gray-600 group-hover:text-sky-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-sky-700">
+                                        News Links
                                     </span>
                                 </Link>
 

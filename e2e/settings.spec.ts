@@ -18,13 +18,14 @@ test.describe('app settings', () => {
         await expect(page.getByRole('switch', { name: 'Peer chat enabled' })).toBeChecked();
         await expect(page.getByLabel('Minimum app version')).toHaveValue('1.0.0');
         await expect(page.getByLabel('Update required message')).toHaveValue('');
+        await expect(page.getByLabel('Support email')).toHaveValue('support@cradi.org');
         await expect(page.getByText('Not set: the default shown is used until you save.')).toHaveCount(3);
         // Missing keys count as changes until saved.
         await expect(page.getByRole('button', { name: 'Save 3 changes' })).toBeEnabled();
 
         const get = (await mock.requests({ method: 'GET', path: '/rest/v1/app_settings' }))[0];
         expect(decodeURIComponent(get.query)).toBe(
-            'select=key,value,updated_at&key=in.(minimum_peer_confirmations,escalation_timeout_minutes,max_sms_per_alert_event,max_sms_per_lga_per_day,feature_flag_peer_chat,app_min_version,app_min_version_message)',
+            'select=key,value,updated_at&key=in.(minimum_peer_confirmations,escalation_timeout_minutes,max_sms_per_alert_event,max_sms_per_lga_per_day,feature_flag_peer_chat,app_min_version,app_min_version_message,support_email)',
         );
     });
 
@@ -60,6 +61,16 @@ test.describe('app settings', () => {
         }
         await version.fill('1.0.14');
         await expect(save).toBeEnabled();
+
+        const email = page.getByLabel('Support email');
+        for (const bad of ['', 'support', 'support@cradi', 'help desk@cradi.org', 'a@b@cradi.org']) {
+            await email.fill(bad);
+            await expect(page.getByText(/^Enter (an|a valid) email address/)).toBeVisible();
+            await expect(email).toHaveAttribute('aria-invalid', 'true');
+            await expect(save).toBeDisabled();
+        }
+        await email.fill('help@cradi.org');
+        await expect(save).toBeEnabled();
         expect(await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).toHaveLength(0);
     });
 
@@ -68,9 +79,10 @@ test.describe('app settings', () => {
         await page.getByRole('switch', { name: 'Peer chat enabled' }).uncheck();
         await page.getByLabel('Minimum app version').fill(' 1.2.3 ');
         await page.getByLabel('Update required message').fill('  Please update now.  ');
-        await expect(page.getByText('Unsaved change')).toHaveCount(3);
-        await page.getByRole('button', { name: 'Save 6 changes' }).click();
-        await expect(toast(page, 'Saved 6 settings')).toBeVisible();
+        await page.getByLabel('Support email').fill(' help@cradi.org ');
+        await expect(page.getByText('Unsaved change')).toHaveCount(4);
+        await page.getByRole('button', { name: 'Save 7 changes' }).click();
+        await expect(toast(page, 'Saved 7 settings')).toBeVisible();
 
         const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
         expect(post.query).toContain('on_conflict=key');
@@ -83,12 +95,18 @@ test.describe('app settings', () => {
             feature_flag_peer_chat: false,
             app_min_version: '1.2.3',
             app_min_version_message: 'Please update now.',
+            support_email: 'help@cradi.org',
             // escalation_timeout_minutes is stored as "30" and unchanged: not written.
         } as Record<string, unknown>);
         for (const r of post.body as SettingRow[]) expect(typeof r.updated_at).toBe('string');
 
         const stored = Object.fromEntries((await mock.table<SettingRow>('app_settings')).map((r) => [r.key, r.value]));
-        expect(stored).toMatchObject({ minimum_peer_confirmations: 3, feature_flag_peer_chat: false, unrelated_key: 'ignored' });
+        expect(stored).toMatchObject({
+            minimum_peer_confirmations: 3,
+            feature_flag_peer_chat: false,
+            support_email: 'help@cradi.org',
+            unrelated_key: 'ignored',
+        });
 
         // Reloaded: nothing left to save.
         await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled();
@@ -97,6 +115,7 @@ test.describe('app settings', () => {
         await expect(page.getByLabel('Minimum peer confirmations')).toHaveValue('3');
         await expect(page.getByRole('switch', { name: 'Peer chat enabled' })).not.toBeChecked();
         await expect(page.getByLabel('Minimum app version')).toHaveValue('1.2.3');
+        await expect(page.getByLabel('Support email')).toHaveValue('help@cradi.org');
     });
 
     test('only changed keys are written; discard restores loaded values', async ({ page, mock }) => {

@@ -153,7 +153,7 @@ export default function LoginPage() {
                 </div>
 
                 <p className="text-center text-sm text-red-200/60 mt-8">
-                    © 2026 EWER. All rights reserved.
+                    © {new Date().getFullYear()} EWER. All rights reserved.
                 </p>
             </div>
 

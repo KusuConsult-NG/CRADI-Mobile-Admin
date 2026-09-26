@@ -62,6 +62,11 @@ const SCHEMA = {
         columns: ['key', 'value', 'updated_at'],
         defaults: {},
     },
+    news_links: {
+        pk: 'id',
+        columns: ['id', 'title', 'url', 'source', 'sort_order', 'is_active', 'created_at', 'updated_at'],
+        defaults: { source: '', sort_order: 0, is_active: true },
+    },
 };
 
 const NOT_NULL = {
@@ -70,6 +75,7 @@ const NOT_NULL = {
     authorities: ['phone', 'coverage_lga'],
     knowledge_base: ['title'],
     app_settings: ['value'],
+    news_links: ['title', 'url', 'source', 'sort_order', 'is_active'],
 };
 
 function iso(daysAgo, minutes = 0) {
@@ -142,6 +148,7 @@ function seed() {
         { key: 'escalation_timeout_minutes', value: '30', updated_at: iso(6) },
         { key: 'feature_flag_peer_chat', value: true, updated_at: iso(6) },
         { key: 'app_min_version', value: '1.0.0', updated_at: iso(6) },
+        { key: 'support_email', value: 'support@cradi.org', updated_at: iso(6) },
         { key: 'unrelated_key', value: 'ignored', updated_at: iso(6) },
     ];
     const alerts = [
@@ -157,7 +164,15 @@ function seed() {
         { id: randomUUID(), user_id: IDS.admin, name: 'Fire', role: '', phone: '113', organization: null, lga: null, category: 'fire', is_available: true, created_at: iso(3), updated_at: iso(3) },
         { id: randomUUID(), user_id: IDS.approved, name: 'Clinic', role: '', phone: '114', organization: null, lga: 'Obi', category: 'health', is_available: true, created_at: iso(3), updated_at: iso(3) },
     ];
-    return { authUsers, tables: { profiles, reports, authorities, app_settings, alerts, knowledge_base, contacts }, sessions: new Map(), refresh: new Map() };
+    // The four links seeded by 20260927040000_builtin_content.sql, plus a hidden one.
+    const news_links = [
+        { id: 'bbf2766b-49fb-5d84-b7dd-b6ff6ac3f4ca', title: 'Flood Safety: What to do before, during, and after', url: 'https://www.redcross.org/get-help/how-to-prepare-for-emergencies/types-of-emergencies/flood.html', source: 'Safety Guide', sort_order: 10, is_active: true, created_at: iso(3), updated_at: iso(3) },
+        { id: 'bd5faf7e-9426-599b-abee-95444292d858', title: 'NiMet Seasonal Climate Prediction', url: 'https://nimet.gov.ng/', source: 'NiMet', sort_order: 20, is_active: true, created_at: iso(3), updated_at: iso(3) },
+        { id: 'f925b3cf-9525-54c5-a784-a0afeeb79942', title: 'Emergency Contact Directory: Nigeria', url: 'https://www.redcrossnigeria.org/', source: 'Red Cross', sort_order: 30, is_active: true, created_at: iso(3), updated_at: iso(3) },
+        { id: '4c7598b5-dc7f-561b-9afe-6f12cc62fb6c', title: 'Understanding Early Warning Systems', url: 'https://www.undrr.org/terminology/early-warning-system', source: 'UNDRR', sort_order: 40, is_active: true, created_at: iso(3), updated_at: iso(3) },
+        { id: randomUUID(), title: 'Archived bulletin', url: 'http://example.org/old-bulletin', source: '', sort_order: 50, is_active: false, created_at: iso(2), updated_at: iso(2) },
+    ];
+    return { authUsers, tables: { profiles, reports, authorities, app_settings, alerts, knowledge_base, contacts, news_links }, sessions: new Map(), refresh: new Map() };
 }
 
 // 1×1 transparent PNG served for every Storage object.
@@ -516,8 +531,24 @@ function checkNotNull(table, row) {
     }
 }
 
+/** Check constraints evaluated on every insert and update. */
+function checkConstraints(table, row) {
+    if (table === 'news_links') {
+        const violation = (name) =>
+            new RestError(400, '23514', `new row for relation "news_links" violates check constraint "${name}"`);
+        const title = typeof row.title === 'string' ? row.title.trim() : '';
+        if (title.length < 1 || title.length > 300) throw violation('news_links_title_check');
+        if (typeof row.url !== 'string' || !/^https?:\/\/\S+$/i.test(row.url) || row.url.length > 2000) {
+            throw violation('news_links_url_check');
+        }
+        if (typeof row.source !== 'string' || row.source.length > 120) throw violation('news_links_source_check');
+        if (!Number.isInteger(row.sort_order)) throw new RestError(400, '22P02', 'invalid input syntax for type integer');
+    }
+}
+
 /** Database triggers / constraints that matter for the admin panel. */
 function beforeUpdate(table, oldRow, newRow) {
+    checkConstraints(table, newRow);
     if (table === 'profiles' && newRow.is_approved && !oldRow.is_approved) {
         const u = state.authUsers.find((x) => x.id === newRow.id);
         if (!u || (!u.email_confirmed_at && !u.phone_confirmed_at)) {
@@ -632,6 +663,7 @@ function handleRest(req, res, url, body) {
             if (table === 'reports') row.submitted_at = nowIso();
             Object.assign(row, item);
             checkNotNull(table, row);
+            checkConstraints(table, row);
             rows.push(row);
             written.push(row);
         }
