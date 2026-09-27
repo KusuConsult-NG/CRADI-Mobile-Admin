@@ -37,6 +37,34 @@ export function getSupabase(): SupabaseClient {
     return client;
 }
 
+/**
+ * A throw-away Supabase client for the password-recovery page only.
+ *
+ * The shared client above deliberately sets `detectSessionInUrl: false` (and
+ * that setting is left alone: turning it on would make *every* admin page try
+ * to consume tokens from its URL). This page therefore reads the recovery
+ * token out of the URL itself and feeds it to a client of its own.
+ *
+ * It is isolated on purpose: `persistSession: false` keeps the short-lived
+ * recovery session out of localStorage, so it never lands in the
+ * `cradi-admin-auth` slot, never replaces a signed-in admin's session, and is
+ * never seen by the admin guard in lib/auth-context.tsx (which signs out any
+ * session that does not belong to an approved admin — that would abort a
+ * legitimate reset for a non-admin staff member).
+ */
+export function createRecoveryClient(): SupabaseClient {
+    if (!isSupabaseConfigured) {
+        throw new Error(`Supabase is not configured. Missing: ${MISSING_SUPABASE_ENV.join(', ')}`);
+    }
+    return createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+            persistSession: false,
+            autoRefreshToken: false,
+            detectSessionInUrl: false,
+        },
+    });
+}
+
 /** Converts a stored image reference (public URL or bucket path) to a URL. */
 export function publicImageUrl(bucket: string, value: string): string | null {
     const v = value.trim();

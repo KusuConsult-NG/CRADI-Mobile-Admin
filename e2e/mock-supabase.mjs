@@ -172,7 +172,14 @@ function seed() {
         { id: '4c7598b5-dc7f-561b-9afe-6f12cc62fb6c', title: 'Understanding Early Warning Systems', url: 'https://www.undrr.org/terminology/early-warning-system', source: 'UNDRR', sort_order: 40, is_active: true, created_at: iso(3), updated_at: iso(3) },
         { id: randomUUID(), title: 'Archived bulletin', url: 'http://example.org/old-bulletin', source: '', sort_order: 50, is_active: false, created_at: iso(2), updated_at: iso(2) },
     ];
-    return { authUsers, tables: { profiles, reports, authorities, app_settings, alerts, knowledge_base, contacts, news_links }, sessions: new Map(), refresh: new Map() };
+    // Password-recovery tokens, as `{{ .TokenHash }}` would appear in a link.
+    // Single use: consumed by POST /auth/v1/verify.
+    const recovery = new Map([
+        ['recovery-admin-ok', { userId: IDS.admin, expiresAt: Date.now() + 3600_000 }],
+        ['recovery-bola-ok', { userId: IDS.approved, expiresAt: Date.now() + 3600_000 }],
+        ['recovery-admin-expired', { userId: IDS.admin, expiresAt: Date.now() - 1000 }],
+    ]);
+    return { authUsers, tables: { profiles, reports, authorities, app_settings, alerts, knowledge_base, contacts, news_links }, sessions: new Map(), refresh: new Map(), recovery };
 }
 
 // 1×1 transparent PNG served for every Storage object.
@@ -290,6 +297,14 @@ function bearer(req) {
 
 const SERVICE_KEY = process.env.MOCK_SUPABASE_SERVICE_KEY || 'test';
 
+/**
+ * Supabase's own "Minimum password length" (Authentication → Providers →
+ * Email). Deliberately stricter here than the client-side rules in
+ * lib/password.ts, so the tests can exercise the `weak_password` message that
+ * only Supabase can produce.
+ */
+const MIN_PASSWORD_LENGTH = 12;
+
 async function handleAuth(req, res, url, body) {
     const path = url.pathname.replace(/^\/auth\/v1/, '');
     if (path === '/token' && req.method === 'POST') {
@@ -309,6 +324,44 @@ async function handleAuth(req, res, url, body) {
             return send(res, 200, newSession(u));
         }
         return authError(res, 400, 'validation_failed', 'Unsupported grant type');
+    }
+    // Password recovery: the link form of the reset mail. GoTrue exchanges
+    // `{{ .TokenHash }}` for a session here (supabase-js `verifyOtp`).
+    if (path === '/verify' && req.method === 'POST') {
+        if (body?.type !== 'recovery') return authError(res, 400, 'validation_failed', 'Unsupported verification type');
+        const hash = String(body?.token_hash ?? '');
+        const entry = state.recovery.get(hash);
+        if (!entry || entry.expiresAt <= Date.now()) {
+            state.recovery.delete(hash);
+            return authError(res, 403, 'otp_expired', 'Email link is invalid or has expired');
+        }
+        state.recovery.delete(hash); // single use
+        const u = state.authUsers.find((x) => x.id === entry.userId);
+        if (!u) return authError(res, 403, 'otp_expired', 'Email link is invalid or has expired');
+        if (isBanned(u)) return authError(res, 400, 'user_banned', 'User is banned');
+        return send(res, 200, newSession(u));
+    }
+    if (path === '/user' && req.method === 'PUT') {
+        const uid = state.sessions.get(bearer(req));
+        const u = uid && state.authUsers.find((x) => x.id === uid);
+        if (!u) return authError(res, 401, 'session_not_found', 'Session from session_id claim in JWT does not exist');
+        if (typeof body?.password === 'string') {
+            // Mirrors the project's "Minimum password length" setting.
+            if (body.password.length < MIN_PASSWORD_LENGTH) {
+                return authError(
+                    res,
+                    422,
+                    'weak_password',
+                    `Password should be at least ${MIN_PASSWORD_LENGTH} characters.`,
+                );
+            }
+            if (body.password === u.password) {
+                return authError(res, 422, 'same_password', 'New password should be different from the old password.');
+            }
+            u.password = body.password;
+        }
+        if (typeof body?.email === 'string') u.email = body.email.toLowerCase();
+        return send(res, 200, publicUser(u));
     }
     if (path === '/user' && req.method === 'GET') {
         const uid = state.sessions.get(bearer(req));
@@ -734,6 +787,13 @@ const server = http.createServer(async (req, res) => {
             return send(res, 200, { ok: true });
         }
         if (url.pathname === '/__mock/requests') return send(res, 200, requestLog);
+        // A freshly minted session, for tests that build an implicit-flow
+        // `#access_token=…` recovery fragment by hand.
+        if (url.pathname === '/__mock/session') {
+            const u = state.authUsers.find((x) => x.email === url.searchParams.get('email'));
+            if (!u) return send(res, 404, { error: 'unknown user' });
+            return send(res, 200, newSession(u));
+        }
         const t = url.pathname.match(/^\/__mock\/table\/([a-z_]+)$/);
         if (t && state.tables[t[1]]) return send(res, 200, state.tables[t[1]]);
         // PATCH /__mock/table/:t/:id — change a row behind the app's back (concurrent edits).
