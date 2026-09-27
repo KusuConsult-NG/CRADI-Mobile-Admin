@@ -6,11 +6,34 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() || '';
 const SUPABASE_ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() || '';
 
-export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY);
+/**
+ * A value that is set but malformed is worse than one that is missing:
+ * `createClient` throws "Invalid supabaseUrl" during the first render, which
+ * white-screens the whole app with only a console message. Checking the shape
+ * here means a wrong value reaches the same "Configuration required" screen a
+ * missing one does, naming what is wrong with it.
+ */
+function supabaseUrlProblem(value: string): string | null {
+    if (!value) return 'is not set';
+    let url: URL;
+    try {
+        url = new URL(value);
+    } catch {
+        return `is not a valid URL ("${value}") — it must start with https://`;
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        return `must use http(s), not "${url.protocol}"`;
+    }
+    return null;
+}
+
+const SUPABASE_URL_PROBLEM = supabaseUrlProblem(SUPABASE_URL);
+
+export const isSupabaseConfigured = Boolean(!SUPABASE_URL_PROBLEM && SUPABASE_ANON_KEY);
 
 export const MISSING_SUPABASE_ENV = [
-    !SUPABASE_URL && 'NEXT_PUBLIC_SUPABASE_URL',
-    !SUPABASE_ANON_KEY && 'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+    SUPABASE_URL_PROBLEM && `NEXT_PUBLIC_SUPABASE_URL ${SUPABASE_URL_PROBLEM}`,
+    !SUPABASE_ANON_KEY && 'NEXT_PUBLIC_SUPABASE_ANON_KEY is not set',
 ].filter((v): v is string => Boolean(v));
 
 let client: SupabaseClient | null = null;

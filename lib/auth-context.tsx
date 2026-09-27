@@ -118,7 +118,8 @@ function ConfigErrorScreen() {
             <div className="glass-card rounded-2xl p-8 max-w-lg w-full text-white">
                 <h1 className="text-2xl font-bold mb-3">Configuration required</h1>
                 <p className="text-red-100 mb-4">
-                    The admin panel cannot connect to Supabase because these environment variables are not set:
+                    The admin panel cannot connect to Supabase. These environment variables need
+                    attention:
                 </p>
                 <ul className="mb-4 space-y-1">
                     {MISSING_SUPABASE_ENV.map((name) => (
