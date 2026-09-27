@@ -13,6 +13,8 @@
 # testing
 /coverage
 /test-results/
+/test-results-highlights/
+/e2e/highlights/
 /playwright-report/
 
 # next.js
