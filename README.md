@@ -21,8 +21,8 @@ deployment of the whole system: `CRADI-mobile/docs/DEPLOYMENT.md`.
 - **User management**: search, filter, paginate; approve, revoke approval, change role, change location (state / LGA / ward from the INEC list), block/unblock, delete (Auth account + profile)
 - **Report management**: filter by status and hazard (legacy spellings included), search, paginate; set approved / verified / rejected / pending; view images; canonical hazard names and a "Verification request" badge
 - **Knowledge base**: create, edit and delete hazard guides
-- **Community alerts**: publish alerts (title, message, severity, target state and LGA picked from the location list) — the backend pushes them to app users — and deactivate them
-- **Authorities**: manage the SMS contacts texted when a report in their LGA is approved (name, organisation, phone normalised to `+234XXXXXXXXXX`, coverage LGA from the fixed list); search / filter by LGA; a panel lists LGAs with no contact
+- **Community alerts**: publish alerts (title, message, severity, target state and LGA picked from the location list) — the backend pushes them to app users — and deactivate them. The state is required whenever an LGA is chosen: six LGA names belong to two states each (Obi is in both Benue and Nasarawa), so the LGA picker stays disabled until a state is picked, and the database rejects an LGA with no state
+- **Authorities**: manage the SMS contacts texted when a report in their LGA is approved (name, organisation, phone normalised to `+234XXXXXXXXXX`, coverage state **and** LGA chosen together from the fixed list — LGA names such as Obi exist in two states, so the state is required and the database rejects a contact without one); search / filter by (state, LGA); a panel lists the (state, LGA) pairs with no contact
 - **App settings**: edit the live `app_settings` keys (peer confirmations, escalation timeout, SMS caps, peer chat flag, minimum app version + message) with typed validation; other keys are ignored
 - **Admin-only access**: the signed-in user's profile must have `role = 'admin'`, `is_approved = true` and `is_disabled = false`
 

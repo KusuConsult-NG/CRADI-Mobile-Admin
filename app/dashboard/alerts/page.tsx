@@ -20,7 +20,7 @@ interface Alert {
     message: string;
     severity: string;
     targetLga: string;
-    /** '' for legacy alerts (target_state NULL): target_lga matches in any state. */
+    /** '' only when targetLga is 'All' (everyone, everywhere); see alertTarget. */
     targetState: string;
     isActive: boolean;
     createdAt: Date | null;
@@ -53,6 +53,12 @@ const EMPTY_FORM: AlertForm = { title: '', message: '', severity: 'info', target
  * The (target_state, target_lga) to store for a form, or an error. Only
  * values from the location list are accepted: a typo would reach no one, and
  * LGA names repeat across states (Obi is in Benue and in Nasarawa).
+ *
+ * An LGA without a state is not a thing an alert can be: the database rejects
+ * it (check alerts_target_lga_needs_state, migration 20260927080000), and this
+ * form never offers it — the LGA picker is disabled until a state is chosen
+ * and resets to 'All' whenever the state changes. The check below is the last
+ * line of that same rule.
  */
 function alertTarget(form: AlertForm): { state: string | null; lga: string } | { error: string } {
     const state = form.targetState;
@@ -64,7 +70,12 @@ function alertTarget(form: AlertForm): { state: string | null; lga: string } | {
     return { state, lga };
 }
 
-/** "Obi, Benue", "All LGAs in Benue", "All LGAs", or just the LGA for legacy alerts. */
+/**
+ * "Obi, Benue", "All LGAs in Benue" or "All LGAs".
+ *
+ * A stored alert with an LGA and no state is impossible, but the fallback keeps
+ * such a row readable rather than blank if one is ever hand-written.
+ */
 function targetLabel(alert: Pick<Alert, 'targetLga' | 'targetState'>): string {
     const allLgas = alert.targetLga.toLowerCase() === 'all';
     if (!alert.targetState) return allLgas ? 'All LGAs' : alert.targetLga;
@@ -381,6 +392,8 @@ export default function AlertsPage() {
                     <form onSubmit={(e) => void createAlert(e)}>
                         <p className="text-sm text-gray-600 mb-4">
                             Publishing sends a push notification to app users in the target area (or everyone).
+                            Pick the state first: LGA names repeat across states (there is an Obi in Benue and
+                            an Obi in Nasarawa), so an alert for one LGA always says which state it is in.
                             Users of older app versions that have not reported their state do not receive the push
                             for an alert targeted at a state.
                         </p>

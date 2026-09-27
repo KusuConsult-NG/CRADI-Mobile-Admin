@@ -127,6 +127,47 @@ test.describe('alerts', () => {
         expect(await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).toHaveLength(0);
     });
 
+    // alerts.target_state is required by the database (migration 20260927080000:
+    // check alerts_target_lga_needs_state), because an LGA name alone can mean
+    // two places. The form must make that shape unreachable, not rely on the
+    // insert being rejected.
+    test('an LGA can never be submitted without a state', async ({ page, mock }) => {
+        await page.getByRole('button', { name: 'New Alert' }).click();
+        const dialog = page.getByRole('dialog', { name: 'New Alert' });
+
+        // With no state chosen the LGA picker is disabled and offers only 'All'.
+        const lga = dialog.getByLabel('Target LGA');
+        await expect(lga).toBeDisabled();
+        expect(await lga.locator('option').allInnerTexts()).toEqual(['All LGAs']);
+
+        // Choosing a state enables it; choosing an LGA and then going back to
+        // "All states" resets the LGA, so the pair can never be (LGA, no state).
+        await dialog.getByLabel('Target state').selectOption('Nasarawa');
+        await expect(lga).toBeEnabled();
+        await lga.selectOption('Obi');
+        await dialog.getByLabel('Target state').selectOption('');
+        await expect(lga).toBeDisabled();
+        await expect(lga).toHaveValue('All');
+
+        // Even a stale/injected DOM that forces an LGA with no state is refused
+        // client-side, so nothing is sent.
+        await page.locator('#alert-lga').evaluate((el: HTMLSelectElement) => {
+            el.disabled = false;
+            const opt = document.createElement('option');
+            opt.value = 'Obi';
+            opt.textContent = 'Obi';
+            el.appendChild(opt);
+            el.value = 'Obi';
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+        await dialog.getByLabel('Title').fill('Which Obi?');
+        await dialog.getByLabel('Message').fill('Ambiguous');
+        await dialog.getByRole('button', { name: 'Publish Alert' }).click();
+        await expect(toast(page, 'Choose the state of the target LGA.')).toBeVisible();
+        await expect(dialog).toBeVisible();
+        expect(await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).toHaveLength(0);
+    });
+
     test('deactivates an alert after confirmation', async ({ page, mock }) => {
         await alertCard(page, 'Flood warning').getByRole('button', { name: 'Deactivate alert Flood warning' }).click();
         const dialog = page.getByRole('dialog', { name: 'Deactivate Alert' });

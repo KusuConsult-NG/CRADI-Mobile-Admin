@@ -55,7 +55,7 @@ const SCHEMA = {
     authorities: {
         pk: 'id',
         columns: ['id', 'name', 'organization', 'phone', 'coverage_lga', 'coverage_state', 'created_at', 'updated_at'],
-        defaults: { name: '', organization: null, coverage_state: null },
+        defaults: { name: '', organization: null },
     },
     app_settings: {
         pk: 'key',
@@ -72,7 +72,9 @@ const SCHEMA = {
 const NOT_NULL = {
     reports: ['hazard_type', 'lga'],
     alerts: ['title'],
-    authorities: ['phone', 'coverage_lga'],
+    // coverage_state is NOT NULL since migration 20260927090000: an LGA name
+    // alone can mean two states, so a contact must always name its own.
+    authorities: ['phone', 'coverage_lga', 'coverage_state'],
     knowledge_base: ['title'],
     app_settings: ['value'],
     news_links: ['title', 'url', 'source', 'sort_order', 'is_active'],
@@ -139,9 +141,11 @@ function seed() {
         report(11, { hazard_type: 'Windstorms', type: 'verification_request', description: 'Please verify: storm damage' }),
     ];
     const authorities = [
-        { id: randomUUID(), name: 'Ado Emergency Desk', organization: 'SEMA Benue', phone: '+2348031234567', coverage_lga: 'Ado', coverage_state: null, created_at: iso(9), updated_at: iso(9) },
-        { id: randomUUID(), name: "Qua'an Pan Desk", organization: null, phone: '+2348039999999', coverage_lga: "Qua'an Pan", coverage_state: null, created_at: iso(8), updated_at: iso(8) },
-        { id: randomUUID(), name: 'Old Contact', organization: null, phone: '12345', coverage_lga: 'Nowhere', coverage_state: null, created_at: iso(7), updated_at: iso(7) },
+        { id: randomUUID(), name: 'Ado Emergency Desk', organization: 'SEMA Benue', phone: '+2348031234567', coverage_lga: 'Ado', coverage_state: 'Benue', created_at: iso(9), updated_at: iso(9) },
+        { id: randomUUID(), name: "Qua'an Pan Desk", organization: null, phone: '+2348039999999', coverage_lga: "Qua'an Pan", coverage_state: 'Plateau', created_at: iso(8), updated_at: iso(8) },
+        // An LGA the panel does not know: the database's foreign key rejects
+        // it, but the list still flags it rather than showing it as normal.
+        { id: randomUUID(), name: 'Old Contact', organization: null, phone: '12345', coverage_lga: 'Nowhere', coverage_state: 'Benue', created_at: iso(7), updated_at: iso(7) },
     ];
     const app_settings = [
         { key: 'minimum_peer_confirmations', value: 2, updated_at: iso(6) },

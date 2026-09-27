@@ -7,7 +7,7 @@ type AuthorityRow = {
     name: string;
     phone: string;
     coverage_lga: string;
-    coverage_state: string | null;
+    coverage_state: string;
     organization: string | null;
 };
 
@@ -32,12 +32,16 @@ test.describe('authorities', () => {
 
         const panel = gaps(page);
         await expect(panel).toContainText(`${LOCATIONS.length - 2} of ${LOCATIONS.length} LGAs have no contact`);
-        // Legacy rows (coverage_state NULL) are flagged in the list.
-        await expect(row(page, 'Ado Emergency Desk').getByText('State not set')).toBeVisible();
+        // Every contact names its state, so the list never shows "State not set".
+        await expect(row(page, 'Ado Emergency Desk').getByText('State not set')).toHaveCount(0);
+        await expect(row(page, 'Ado Emergency Desk')).toContainText('Benue');
         await expect(panel.getByRole('button', { name: 'Ado', exact: true })).toHaveCount(0);
         await expect(panel.getByRole('button', { name: "Qua'an Pan", exact: true })).toHaveCount(0);
         await expect(panel.getByRole('button', { name: 'Agatu', exact: true })).toBeVisible();
-        await expect(panel).toContainText('“Nowhere”');
+        // The warning names the state too: an unknown LGA reported as a bare
+        // name is the ambiguity this screen exists to remove — “Obi” alone
+        // could be Benue's or Nasarawa's.
+        await expect(panel).toContainText('“Nowhere, Benue”');
 
         // A gap chip opens the form with that LGA chosen.
         await panel.getByRole('button', { name: 'Agatu', exact: true }).click();
@@ -74,7 +78,10 @@ test.describe('authorities', () => {
         const dupQuery = decodeURIComponent(dupCheck!.query);
         expect(dupQuery).toContain('select=id,phone');
         expect(dupQuery).not.toContain('phone=eq.');
-        expect(dupQuery).toContain('or=(coverage_state.eq."Benue",coverage_state.is.null)');
+        // Scoped to the (state, LGA), not the LGA name: there are no
+        // state-less contacts to match any more.
+        expect(dupQuery).toContain('coverage_state=eq.Benue');
+        expect(dupQuery).not.toContain('coverage_state.is.null');
         await expect(gaps(page).getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
     });
 
@@ -116,7 +123,7 @@ test.describe('authorities', () => {
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, 'Choose the LGA this contact covers.')).toBeVisible();
 
-        // Same number already listed for Ado (a legacy row without a state counts for every state).
+        // Same number already listed for Ado, Benue.
         await dialog.getByLabel('Coverage LGA').selectOption('Ado');
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, '+2348031234567 is already listed for Ado, Benue.')).toBeVisible();
@@ -185,7 +192,6 @@ test.describe('authorities', () => {
         await row(page, 'Ado Emergency Desk').getByRole('button', { name: 'Edit Ado Emergency Desk' }).click();
         const dialog = page.getByRole('dialog', { name: 'Edit Authority' });
         await expect(dialog.getByLabel('Phone')).toHaveValue('+2348031234567');
-        // Legacy row (no state): Ado exists only in Benue, so the state is filled in.
         await expect(dialog.getByLabel('Coverage LGA')).toHaveValue('Benue|Ado');
         await dialog.getByLabel('Phone').fill('0803 123 4000');
         await dialog.getByLabel(/Organisation/).fill('');
@@ -271,27 +277,89 @@ test.describe('authorities', () => {
         await expect(row(page, 'Obi Nasarawa Desk')).toBeVisible();
     });
 
-    test('a legacy authority in an ambiguous LGA must be given a state when edited', async ({ page, mock }) => {
+    test('an LGA can never be submitted without its state, even from a tampered DOM', async ({ page, mock }) => {
+        // The select only offers real (state, LGA) pairs, grouped by state:
+        // there is no option whose value carries an LGA and no state.
+        await page.getByRole('button', { name: 'Add Authority' }).click();
+        const dialog = page.getByRole('dialog', { name: 'Add Authority' });
+        const select = dialog.getByLabel('Coverage LGA');
+        const values = await select.locator('option').evaluateAll((os) =>
+            os.map((o) => (o as HTMLOptionElement).value),
+        );
+        expect(values).toContain('');
+        for (const v of values.filter(Boolean)) {
+            const [state, lga] = v.split('|');
+            expect(state, v).not.toBe('');
+            expect(lga, v).not.toBe('');
+        }
+        // Every non-empty option lives inside an <optgroup> named after its state.
+        const orphans = await select
+            .locator(':scope > option')
+            .evaluateAll((os) => os.map((o) => (o as HTMLOptionElement).value).filter(Boolean));
+        expect(orphans).toEqual([]);
+
+        await dialog.getByLabel('Name').fill('Tampered Desk');
+        await dialog.getByLabel('Phone').fill('08031110055');
+
+        // Now forge the values a tampered page could send: an LGA with an empty
+        // state, an LGA with a state it is not in, an invented state, and a
+        // bare LGA name with no separator at all. Each is refused client-side
+        // and nothing is POSTed. (The database refuses them too: coverage_state
+        // is NOT NULL with a composite foreign key into public.nigeria_lgas.)
+        for (const [forged, message] of [
+            ['|Obi', 'Choose the state of Obi'],
+            ['Obi', 'Choose the state of Obi'],
+            ['Plateau|Obi', 'Choose the state of Obi'],
+            ['Atlantis|Obi', 'Choose the state of Obi'],
+            ['|Makurdi', 'Choose the state of Makurdi'],
+        ] as const) {
+            await select.evaluate((el, v) => {
+                const sel = el as HTMLSelectElement;
+                const opt = document.createElement('option');
+                opt.value = v;
+                opt.textContent = v;
+                sel.appendChild(opt);
+                sel.value = v;
+                sel.dispatchEvent(new Event('change', { bubbles: true }));
+            }, forged);
+            await expect(select).toHaveValue(forged);
+            await dialog.getByRole('button', { name: 'Add Authority' }).click();
+            await expect(toast(page, message)).toBeVisible();
+            await expect(dialog).toBeVisible();
+            expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
+        }
+
+        // A real pair goes through, carrying the state.
+        await select.selectOption('Nasarawa|Obi');
+        await dialog.getByRole('button', { name: 'Add Authority' }).click();
+        await expect(toast(page, 'Authority added')).toBeVisible();
+        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).at(-1)!;
+        expect(post.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Nasarawa' });
+        expect((await mock.table<AuthorityRow>('authorities')).every((a) => !!a.coverage_state)).toBe(true);
+    });
+
+    test('a contact whose LGA is not in its state must be re-pointed before it can be saved', async ({ page, mock }) => {
+        // Defensive: the database cannot produce such a row (20260927090000),
+        // but if one arrives the form opens with nothing selected rather than
+        // carrying a coverage it cannot name a state for.
         const old = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Old Contact')!;
         await fetch(`${MOCK_URL}/__mock/table/authorities/${old.id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ coverage_lga: 'Obi', phone: '08031110009' }),
+            body: JSON.stringify({ coverage_lga: 'Obi', coverage_state: 'Plateau', phone: '08031110009' }),
         });
         await page.reload();
         await expect(page.getByText('Showing 1–3 of 3 authorities')).toBeVisible();
-        // A legacy Obi contact is texted for both states, so neither Obi is a gap.
-        await expect(gaps(page).getByRole('button', { name: 'Obi', exact: true })).toHaveCount(0);
-        await expect(row(page, 'Old Contact').getByText('State not set')).toBeVisible();
+        // Obi, Plateau is not a real pair: neither Obi counts as covered.
+        await expect(gaps(page).getByRole('button', { name: 'Obi', exact: true })).toHaveCount(2);
+        await expect(row(page, 'Old Contact').getByText('Unknown LGA')).toBeVisible();
 
         await row(page, 'Old Contact').getByRole('button', { name: 'Edit Old Contact' }).click();
         const dialog = page.getByRole('dialog', { name: 'Edit Authority' });
         const select = dialog.getByLabel('Coverage LGA');
-        await expect(select).toHaveValue('|Obi');
-        await expect(select.locator('option:checked')).toHaveText('Obi (state not set)');
-        await expect(dialog).toContainText('Obi exists in Benue and Nasarawa. Choose the state');
+        await expect(select).toHaveValue('');
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
-        await expect(toast(page, 'Choose the state of Obi')).toBeVisible();
+        await expect(toast(page, 'Choose the LGA this contact covers.')).toBeVisible();
         expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).toHaveLength(0);
 
         await select.selectOption('Benue|Obi');
@@ -308,7 +376,7 @@ test.describe('authorities', () => {
     test('deletes an authority after confirmation', async ({ page, mock }) => {
         await row(page, 'Old Contact').getByRole('button', { name: 'Delete Old Contact' }).click();
         const dialog = page.getByRole('dialog', { name: 'Delete Authority' });
-        await expect(dialog).toContainText('Delete Old Contact (12345) for Nowhere?');
+        await expect(dialog).toContainText('Delete Old Contact (12345) for Nowhere, Benue?');
         await dialog.getByRole('button', { name: 'Delete' }).click();
         await expect(toast(page, 'Authority deleted')).toBeVisible();
         await expect(row(page, 'Old Contact')).toHaveCount(0);

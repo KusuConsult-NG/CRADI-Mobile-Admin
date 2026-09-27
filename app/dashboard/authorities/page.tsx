@@ -24,7 +24,13 @@ interface Authority {
     organization: string;
     phone: string;
     coverageLga: string;
-    /** '' for legacy rows (coverage_state NULL): they match the LGA name in every state. */
+    /**
+     * Always set: since migration 20260927090000 authorities.coverage_state is
+     * NOT NULL and (coverage_state, coverage_lga) is a foreign key into
+     * public.nigeria_lgas, so the database cannot hold a contact that covers
+     * an LGA name in every state. '' only if a row somehow arrives malformed,
+     * and then the row is flagged and must be re-pointed before it can be saved.
+     */
     coverageState: string;
     updatedAt: Date | null;
 }
@@ -46,8 +52,9 @@ interface AuthorityForm {
     organization: string;
     phone: string;
     /**
-     * Value of the LGA select: `${state}|${lga}` (see lgaKey). A legacy row whose
-     * LGA name exists in several states starts as `|${lga}` until a state is chosen.
+     * Value of the LGA select: `${state}|${lga}` (see lgaKey). Always carries
+     * both halves — every option in the select is grouped under its state — so
+     * a contact cannot be saved for an LGA without naming its state.
      */
     coverage: string;
 }
@@ -56,7 +63,7 @@ const EMPTY_FORM: AuthorityForm = { name: '', organization: '', phone: '', cover
 
 /**
  * Unique key / select value for an LGA: names repeat across states (Obi is in
- * Benue and Nasarawa), so the state is part of it. `state` is '' for legacy rows.
+ * Benue and Nasarawa), so the state is always part of it.
  */
 function lgaKey(state: string, lga: string): string {
     return `${state}|${lga}`;
@@ -72,27 +79,31 @@ function statesWithLga(lga: string): string[] {
     return LOCATIONS.filter((l) => l.lga === lga).map((l) => l.state);
 }
 
-/** True when the authority's LGA (and state, when set) is one reports can carry. */
+/** True when the authority covers a real (state, LGA) pair reports can carry. */
 function isKnownCoverage(state: string, lga: string): boolean {
-    return state ? isLgaInState(state, lga) : isLga(lga);
+    return isLgaInState(state, lga);
 }
 
-/** "Obi, Benue", or just the LGA for legacy rows without a state. */
+/** "Obi, Benue". A contact always covers exactly one (state, LGA). */
 function coverageLabel(state: string, lga: string): string {
     return state ? `${lga}, ${state}` : lga;
 }
 
-/** Double-quotes a value for a PostgREST `or=(...)` list (commas, dots and parens are reserved). */
-function quoteFilterValue(value: string): string {
-    return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-}
-
-/** Initial select value when editing: legacy rows get their state filled in when the LGA name is unambiguous. */
+/**
+ * Initial select value when editing. A row whose (state, LGA) is not a pair
+ * this panel knows opens with nothing selected, so the admin has to pick one
+ * from the list before it can be saved — the form never carries an LGA whose
+ * state it cannot name.
+ */
 function coverageForEdit(a: Authority): string {
-    if (a.coverageState) return isLgaInState(a.coverageState, a.coverageLga) ? lgaKey(a.coverageState, a.coverageLga) : '';
-    const states = statesWithLga(a.coverageLga);
-    if (states.length === 1) return lgaKey(states[0], a.coverageLga);
-    return states.length > 1 ? lgaKey('', a.coverageLga) : '';
+    if (isLgaInState(a.coverageState, a.coverageLga)) return lgaKey(a.coverageState, a.coverageLga);
+    // Defensive: a row written before 20260927090000 / by hand may have no
+    // state. Fill it in only when the LGA name identifies one state; never guess.
+    if (!a.coverageState) {
+        const states = statesWithLga(a.coverageLga);
+        if (states.length === 1) return lgaKey(states[0], a.coverageLga);
+    }
+    return '';
 }
 
 const INPUT_CLASS =
@@ -156,11 +167,10 @@ export default function AuthoritiesPage() {
                 .order('id', { ascending: true })
                 .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
             if (lgaFilter !== 'all') {
-                // Everyone texted for that LGA: its state's contacts plus legacy rows without a state.
+                // Everyone texted for that (state, LGA) — which is everyone
+                // listed for it: a contact covers one state's LGA and no other.
                 const { state, lga } = parseLgaKey(lgaFilter);
-                query = query
-                    .eq('coverage_lga', lga)
-                    .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`);
+                query = query.eq('coverage_lga', lga).eq('coverage_state', state);
             }
             if (searchQuery) {
                 const p = `*${searchQuery}*`;
@@ -233,15 +243,15 @@ export default function AuthoritiesPage() {
 
     const coverageInfo = useMemo(() => {
         if (!coverage) return null;
-        // A contact with a state covers that (state, LGA) only; a legacy contact
-        // without a state covers the LGA name in every state (the backend texts it for all).
+        // Coverage is per (state, LGA): a contact covers the LGA of its own
+        // state and no other. Obi, Benue being covered says nothing about Obi,
+        // Nasarawa — the backend matches both halves, and since migration
+        // 20260927090000 no contact can omit its state and stand in for both.
         const withState = new Set<string>();
-        const anyState = new Set<string>();
         for (const c of coverage) {
             if (c.state) withState.add(lgaKey(c.state, c.lga));
-            else anyState.add(c.lga);
         }
-        const covered = (state: string, lga: string) => anyState.has(lga) || withState.has(lgaKey(state, lga));
+        const covered = (state: string, lga: string) => withState.has(lgaKey(state, lga));
         const gapsByState = STATES.map((state) => ({
             state,
             lgas: lgasForState(state).filter((lga) => !covered(state, lga)),
@@ -263,8 +273,13 @@ export default function AuthoritiesPage() {
 
     const normalizedPhone = form ? normalizeNigerianPhone(form.phone) : null;
     const formLga = parseLgaKey(form?.coverage ?? '');
-    /** Legacy row whose LGA name exists in several states: the admin must pick one. */
-    const formNeedsState = !!form && !formLga.state && isLga(formLga.lga);
+    /**
+     * An LGA is selected but its state is missing or is not a state that LGA
+     * is in. Every option the select offers is a real (state, LGA) pair, so
+     * this only happens when the DOM has been tampered with (or a stale row
+     * was opened) — the submit handler refuses it either way.
+     */
+    const formNeedsState = !!form && isLga(formLga.lga) && !isLgaInState(formLga.state, formLga.lga);
 
     async function saveAuthority(e: React.FormEvent) {
         e.preventDefault();
@@ -280,13 +295,25 @@ export default function AuthoritiesPage() {
             toast.error('Enter a valid Nigerian phone number, e.g. 0803 123 4567 or +2348031234567.');
             return;
         }
+        // An LGA may never be saved without its state. Both halves are
+        // re-checked here, not just read off the select, so a tampered
+        // <option value="|Obi"> (or "Atlantis|Obi", or a bare "Obi") is
+        // refused rather than sent. The database enforces the same rule
+        // (authorities.coverage_state NOT NULL + the composite foreign key
+        // authorities_coverage_lga_fkey into public.nigeria_lgas, migration
+        // 20260927090000); this is the message that explains it.
         const { state, lga } = parseLgaKey(form.coverage);
         if (!isLga(lga)) {
             toast.error('Choose the LGA this contact covers.');
             return;
         }
         if (!isLgaInState(state, lga)) {
-            toast.error(`Choose the state of ${lga}: the name exists in ${statesWithLga(lga).join(' and ')}.`);
+            const candidates = statesWithLga(lga);
+            toast.error(
+                candidates.length > 0
+                    ? `Choose the state of ${lga}: the name exists in ${candidates.join(' and ')}.`
+                    : `${lga} is not an LGA of any listed state. Pick one from the list.`,
+            );
             return;
         }
         const where = coverageLabel(state, lga);
@@ -295,14 +322,15 @@ export default function AuthoritiesPage() {
         try {
             const supabase = getSupabase();
             // The same number twice in one (state, LGA) would only be texted once; refuse the
-            // duplicate. A legacy row without a state already covers this LGA in every state.
+            // duplicate. Per (state, LGA), not per LGA name: the same desk may
+            // legitimately cover Obi in Benue and Obi in Nasarawa.
             // Stored phones may predate normalisation ("0803 123 4567"), so compare
-            // the normalised forms of every contact for this LGA, not the raw column.
+            // the normalised forms of every contact for this (state, LGA), not the raw column.
             let dup = supabase
                 .from(TABLES.AUTHORITIES)
                 .select('id, phone')
                 .eq('coverage_lga', lga)
-                .or(`coverage_state.eq.${quoteFilterValue(state)},coverage_state.is.null`);
+                .eq('coverage_state', state);
             if (form.id) dup = dup.neq('id', form.id);
             const { data: dupRows, error: dupError } = await dup;
             if (dupError) throw dupError;
@@ -388,10 +416,12 @@ export default function AuthoritiesPage() {
                 <div className="flex gap-3 rounded-xl border border-blue-200 bg-blue-50 p-4 text-sm text-blue-900">
                     <Info className="w-5 h-5 flex-shrink-0 mt-0.5" aria-hidden="true" />
                     <p>
-                        Every number listed here receives an SMS when a report in its LGA is approved. The LGA and
-                        state must match the report&apos;s exactly, so they are chosen from the fixed list (some LGA
-                        names, such as Obi, exist in more than one state). Contacts saved before states were recorded
-                        are texted for that LGA name in every state until edited. Per approved report
+                        Every number listed here receives an SMS when a report in its LGA is approved. A contact
+                        covers exactly one <strong>state and LGA</strong>, both chosen together from the fixed list:
+                        six LGA names (Bassa, Ifelodun, Irepodun, Nasarawa, Obi, Surulere) exist in two states each,
+                        so an LGA on its own does not say where the contact is. A contact for Obi in Benue is never
+                        texted about Obi in Nasarawa. The database enforces this — an authority without a state, or
+                        with an LGA that is not in the state it claims, is rejected. Per approved report
                         only the oldest contacts up to the <em>max SMS per alert event</em> setting are texted, and
                         each LGA is capped by <em>max SMS per LGA per day</em> (see Settings).
                     </p>
@@ -553,6 +583,8 @@ export default function AuthoritiesPage() {
                                                             </span>
                                                         ) : (
                                                             a.coverageLga && (
+                                                                // Impossible since 20260927090000; shown rather
+                                                                // than hidden if one ever turns up.
                                                                 <span className="block text-xs text-amber-700">
                                                                     State not set
                                                                 </span>
@@ -709,14 +741,13 @@ export default function AuthoritiesPage() {
                                     required
                                     value={form.coverage}
                                     onChange={(e) => updateForm('coverage', e.target.value)}
-                                    aria-describedby={formNeedsState ? 'authority-lga-hint' : undefined}
+                                    aria-describedby="authority-lga-hint"
                                     aria-invalid={formNeedsState || undefined}
                                     className={INPUT_CLASS}
                                 >
-                                    <option value="">Select an LGA…</option>
-                                    {formNeedsState && (
-                                        <option value={form.coverage}>{formLga.lga} (state not set)</option>
-                                    )}
+                                    <option value="">Select a state and LGA…</option>
+                                    {/* Every option is a real (state, LGA) pair, grouped under its
+                                        state: there is no way to choose an LGA without a state. */}
                                     {STATES.map((state) => (
                                         <optgroup key={state} label={state}>
                                             {lgasForState(state).map((lga) => (
@@ -727,13 +758,16 @@ export default function AuthoritiesPage() {
                                         </optgroup>
                                     ))}
                                 </select>
-                                {formNeedsState && (
-                                    <p id="authority-lga-hint" className="mt-1 text-xs text-amber-700">
-                                        {formLga.lga} exists in {statesWithLga(formLga.lga).join(' and ')}. Choose the
-                                        state this contact covers: until then it is texted for {formLga.lga} in every
-                                        state.
-                                    </p>
-                                )}
+                                <p
+                                    id="authority-lga-hint"
+                                    className={`mt-1 text-xs ${formNeedsState ? 'text-amber-700' : 'text-gray-500'}`}
+                                >
+                                    {formNeedsState
+                                        ? statesWithLga(formLga.lga).length > 1
+                                            ? `${formLga.lga} exists in ${statesWithLga(formLga.lga).join(' and ')}. Pick the one this contact covers — it will not be texted for the other.`
+                                            : `Pick ${formLga.lga} under its state.`
+                                        : 'Listed under its state: a contact covers that state’s LGA only.'}
+                                </p>
                             </div>
                         </div>
                         <div className="flex gap-3 justify-end mt-6">

@@ -217,14 +217,20 @@ export default function SettingsPage() {
     }, [user, reloadKey]);
 
     const errors: Record<string, string> = {};
+    // What Save would write: anything the user edited, plus any default that
+    // has never been stored.
     const changed: SettingDef[] = [];
+    // What Discard would undo: only what the user actually edited. A default
+    // missing from the database is not something the form can revert, so
+    // counting it here would leave Discard enabled and doing nothing.
+    const edited: SettingDef[] = [];
     if (loaded) {
         for (const def of SETTINGS) {
             const result = parseValue(def, draft[def.key]);
             if ('error' in result) errors[def.key] = result.error;
-            if (!loaded.present[def.key] || !sameStored(def, draft[def.key], loaded.values[def.key])) {
-                changed.push(def);
-            }
+            const differs = !sameStored(def, draft[def.key], loaded.values[def.key]);
+            if (differs) edited.push(def);
+            if (!loaded.present[def.key] || differs) changed.push(def);
         }
     }
     // Only keys being saved must be valid: an invalid value already stored
@@ -414,7 +420,7 @@ export default function SettingsPage() {
                             <button
                                 type="button"
                                 onClick={() => setDraft(loaded.values)}
-                                disabled={saving || changed.length === 0}
+                                disabled={saving || edited.length === 0}
                                 className="flex items-center gap-2 px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors disabled:opacity-50"
                             >
                                 <RotateCcw className="w-4 h-4" />
