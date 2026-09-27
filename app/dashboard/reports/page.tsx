@@ -2,107 +2,315 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
-import { databases, DATABASE_ID, COLLECTIONS, Query } from '@/lib/appwrite';
-import { AlertTriangle, Loader2, Search, ArrowLeft, MapPin, Clock } from 'lucide-react';
-import Link from 'next/link';
+import { getSupabase, publicImageUrl } from '@/lib/supabase';
+import {
+    TABLES,
+    REPORT_IMAGES_BUCKET,
+    REPORT_STATUSES,
+    REPORT_HAZARDS,
+    canonicalHazardName,
+    capitalize,
+    sanitizeSearch,
+    toDate,
+    type ReportStatus,
+} from '@/lib/constants';
+import Pagination from '@/components/Pagination';
+import Modal from '@/components/Modal';
+import { AlertTriangle, Loader2, Search, MapPin, Clock, User } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-interface Report {
-    $id: string;
-    type: string;
-    severity: string;
-    description: string;
-    location?: string;
-    status: string;
-    userId?: string;
-    $createdAt: string;
+const PAGE_SIZE = 20;
+
+/** Postgres error codes whose message is written for people: insufficient_privilege, invalid_parameter_value, no_data_found. */
+const SERVER_MESSAGE_CODES = new Set(['42501', '22023', 'P0002']);
+
+type StatusFilter = 'all' | ReportStatus;
+
+/** Report `type` of a peer verification request (as opposed to a direct hazard report). */
+const VERIFICATION_REQUEST_TYPE = 'verification_request';
+
+/** Stored hazard_type values matched by the hazard filter: the canonical name plus legacy spellings. */
+function hazardFilterValues(name: string): string[] {
+    const hazard = REPORT_HAZARDS.find((h) => h.name === name);
+    return hazard ? Array.from(new Set([hazard.name, ...hazard.aliases])) : [name];
 }
+
+interface Report {
+    id: string;
+    hazardType: string;
+    severity?: string;
+    description?: string;
+    location?: string;
+    ward?: string;
+    lga?: string;
+    state?: string;
+    status: string;
+    reporterName?: string;
+    submittedAt: Date | null;
+    imageUrls: string[];
+    isAlert: boolean;
+    escalated: boolean;
+    verificationCount: number;
+    isVerificationRequest: boolean;
+}
+
+interface ReportRow {
+    id: string;
+    hazard_type: string | null;
+    type: string | null;
+    severity: string | null;
+    description: string | null;
+    location_details: string | null;
+    location: string | null;
+    address: string | null;
+    ward: string | null;
+    lga: string | null;
+    state: string | null;
+    status: string | null;
+    reporter_name: string | null;
+    submitted_at: string | null;
+    created_at: string | null;
+    image_urls: string[] | null;
+    is_alert: boolean | null;
+    escalated: boolean | null;
+    verification_count: number | null;
+}
+
+const REPORT_COLUMNS =
+    'id, hazard_type, type, severity, description, location_details, location, address, ward, lga, state, status, reporter_name, submitted_at, created_at, image_urls, is_alert, escalated, verification_count';
+
+function str(value: unknown): string | undefined {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function toReport(row: ReportRow): Report {
+    const imageUrls = (Array.isArray(row.image_urls) ? row.image_urls : [])
+        .map((v) => (typeof v === 'string' ? publicImageUrl(REPORT_IMAGES_BUCKET, v) : null))
+        .filter((u): u is string => !!u);
+    const isVerificationRequest = row.type === VERIFICATION_REQUEST_TYPE;
+    // Older rows kept the hazard in `type`; a verification request's type is not a hazard.
+    const rawHazard = str(row.hazard_type) ?? (isVerificationRequest ? undefined : str(row.type));
+    return {
+        id: row.id,
+        hazardType: rawHazard ? canonicalHazardName(rawHazard) : 'Unknown hazard',
+        severity: str(row.severity),
+        description: str(row.description),
+        location: str(row.location_details) ?? str(row.location) ?? str(row.address),
+        ward: str(row.ward),
+        lga: str(row.lga),
+        state: str(row.state),
+        status: str(row.status) ?? 'pending',
+        reporterName: str(row.reporter_name),
+        submittedAt: toDate(row.submitted_at ?? row.created_at),
+        imageUrls,
+        isAlert: row.is_alert === true,
+        escalated: row.escalated === true,
+        verificationCount: typeof row.verification_count === 'number' ? row.verification_count : 0,
+        isVerificationRequest,
+    };
+}
+
+/** Timestamp columns stamped when an admin moves a report into a status. */
+const STATUS_TIMESTAMP: Partial<Record<ReportStatus, string>> = {
+    approved: 'approved_at',
+    rejected: 'rejected_at',
+    verified: 'verified_at',
+};
+
+const getSeverityColor = (severity?: string) => {
+    switch (severity?.toLowerCase()) {
+        case 'critical':
+            return 'bg-red-100 text-red-700';
+        case 'high':
+            return 'bg-orange-100 text-orange-700';
+        case 'medium':
+            return 'bg-yellow-100 text-yellow-700';
+        case 'low':
+            return 'bg-blue-100 text-blue-700';
+        default:
+            return 'bg-gray-100 text-gray-700';
+    }
+};
+
+const getStatusColor = (status: string) => {
+    switch (status.toLowerCase()) {
+        case 'approved':
+            return 'bg-green-100 text-green-700';
+        case 'verified':
+            return 'bg-blue-100 text-blue-700';
+        case 'pending':
+            return 'bg-yellow-100 text-yellow-700';
+        case 'rejected':
+            return 'bg-red-100 text-red-700';
+        default:
+            return 'bg-gray-100 text-gray-700';
+    }
+};
+
+const STATUS_ACTIONS: Record<ReportStatus, { label: string; className: string }> = {
+    approved: { label: 'Approve', className: 'bg-green-600 hover:bg-green-700' },
+    verified: { label: 'Mark Verified', className: 'bg-blue-600 hover:bg-blue-700' },
+    rejected: { label: 'Reject', className: 'bg-red-600 hover:bg-red-700' },
+    pending: { label: 'Reset to Pending', className: 'bg-yellow-500 hover:bg-yellow-600' },
+};
+
+const ACTION_ORDER: ReportStatus[] = ['approved', 'verified', 'rejected', 'pending'];
+
+/** Status changes that need confirmation before they are applied. */
+type ConfirmAction = { report: Report; status: 'rejected' | 'pending' };
+
+const REJECTION_REASON_MAX = 500;
 
 export default function ReportsPage() {
     const { user, loading: authLoading } = useAuth();
-    const router = useRouter();
     const [reports, setReports] = useState<Report[]>([]);
+    const [totalCount, setTotalCount] = useState<number | null>(null);
     const [loading, setLoading] = useState(true);
+    const [page, setPage] = useState(0);
+    const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
-    const [statusFilter, setStatusFilter] = useState<string>('all');
+    const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    const [hazardFilter, setHazardFilter] = useState('all');
+    const [reloadKey, setReloadKey] = useState(0);
+    const [updatingId, setUpdatingId] = useState<string | null>(null);
+    const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
+    const [rejectionReason, setRejectionReason] = useState('');
+
+    // Debounce the search box; a new search starts again at the first page.
+    useEffect(() => {
+        const next = sanitizeSearch(searchInput);
+        if (next === searchQuery) return;
+        const handle = setTimeout(() => {
+            setSearchQuery(next);
+            setPage(0);
+        }, 350);
+        return () => clearTimeout(handle);
+    }, [searchInput, searchQuery]);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-        } else if (user) {
-            fetchReports();
-        }
-    }, [user, authLoading, router]);
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
+        if (!user) return;
 
-    async function fetchReports() {
-        try {
+        let cancelled = false;
+        async function load() {
             setLoading(true);
-            const response = await databases.listDocuments(DATABASE_ID, COLLECTIONS.REPORTS, [
-                Query.orderDesc('$createdAt'),
-                Query.limit(100),
-            ]);
-            setReports(response.documents as any);
-        } catch (error) {
-            console.error('Error fetching reports:', error);
-        } finally {
+            let query = getSupabase()
+                .from(TABLES.REPORTS)
+                .select(REPORT_COLUMNS, { count: 'exact' })
+                .order('submitted_at', { ascending: false })
+                .order('id', { ascending: false })
+                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            if (statusFilter !== 'all') query = query.eq('status', statusFilter);
+            if (hazardFilter !== 'all') query = query.in('hazard_type', hazardFilterValues(hazardFilter));
+            if (searchQuery) {
+                const p = `*${searchQuery}*`;
+                query = query.or(
+                    `hazard_type.ilike.${p},description.ilike.${p},location_details.ilike.${p},ward.ilike.${p},lga.ilike.${p},state.ilike.${p},reporter_name.ilike.${p}`,
+                );
+            }
+            const { data, count, error } = await query;
+            if (cancelled) return;
+            if (error) {
+                console.error('Error fetching reports:', error);
+                toast.error('Failed to load reports.');
+                setReports([]);
+                setTotalCount(null);
+            } else {
+                const rows = (data ?? []) as ReportRow[];
+                if (rows.length === 0 && page > 0) {
+                    // Past the last page (rows changed elsewhere): step back.
+                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                    return;
+                }
+                setReports(rows.map(toReport));
+                setTotalCount(count ?? null);
+            }
             setLoading(false);
         }
+        void load();
+        return () => {
+            cancelled = true;
+        };
+    }, [user, page, statusFilter, hazardFilter, searchQuery, reloadKey]);
+
+    /** Reject and Reset to Pending ask for confirmation first; other actions apply directly. */
+    function requestStatusChange(report: Report, newStatus: ReportStatus) {
+        if (newStatus === 'rejected' || newStatus === 'pending') {
+            setRejectionReason('');
+            setConfirmAction({ report, status: newStatus });
+        } else {
+            void updateReportStatus(report, newStatus);
+        }
     }
 
-    async function updateReportStatus(reportId: string, newStatus: string) {
+    function runConfirmedAction() {
+        if (!confirmAction) return;
+        const { report, status } = confirmAction;
+        setConfirmAction(null);
+        void updateReportStatus(report, status, status === 'rejected' ? rejectionReason.trim() : undefined);
+    }
+
+    async function updateReportStatus(report: Report, newStatus: ReportStatus, reason?: string) {
+        if (updatingId || !user) return;
+        setUpdatingId(report.id);
         try {
-            await databases.updateDocument(DATABASE_ID, COLLECTIONS.REPORTS, reportId, {
-                status: newStatus,
-            });
-            toast.success(`Report ${newStatus}`);
-            fetchReports();
+            if (newStatus === 'pending') {
+                // Reopening must also clear peer votes and reschedule escalation,
+                // otherwise the report can never be verified again.
+                const { error } = await getSupabase().rpc('reopen_report', { p_report_id: report.id });
+                if (error) throw error;
+            } else {
+                const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
+                const stampColumn = STATUS_TIMESTAMP[newStatus];
+                if (stampColumn) update[stampColumn] = new Date().toISOString();
+                if (newStatus === 'rejected') update.rejection_reason = reason || null;
+
+                // Optimistic lock: only apply the decision to the status this
+                // card showed. If someone else decided (or reopened) the report
+                // meanwhile, no row matches and nothing is overwritten.
+                const { data, error } = await getSupabase()
+                    .from(TABLES.REPORTS)
+                    .update(update)
+                    .eq('id', report.id)
+                    .eq('status', report.status)
+                    .select('id');
+                if (error) throw error;
+                if (!data || data.length === 0) {
+                    // No row back: the status changed since the list loaded (RLS
+                    // would also filter silently, but staff may update reports).
+                    toast.error('This report changed since you loaded it — reloading');
+                    setReloadKey((k) => k + 1);
+                    return;
+                }
+            }
+
+            toast.success(`Report marked as ${newStatus}`);
+            if (newStatus === 'pending' || (statusFilter !== 'all' && statusFilter !== newStatus)) {
+                // Reopen resets several columns, or the row no longer matches the
+                // active filter: reload the current page.
+                if (reports.length === 1 && page > 0) setPage((p) => p - 1);
+                else setReloadKey((k) => k + 1);
+            } else {
+                setReports((prev) => prev.map((r) => (r.id === report.id ? { ...r, status: newStatus } : r)));
+            }
         } catch (error) {
             console.error('Error updating report:', error);
-            toast.error('Failed to update report');
+            const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
+            const message = error instanceof Error || (typeof error === 'object' && error && 'message' in error)
+                ? String((error as { message: unknown }).message)
+                : '';
+            // Database errors with a readable reason: permission (e.g. own
+            // report), invalid state (e.g. "Report is already pending"), not
+            // found; thrown Errors carry their own message.
+            const readable = SERVER_MESSAGE_CODES.has(code) || error instanceof Error;
+            toast.error(readable && message ? message : 'Failed to update report');
+            // Invalid state means the list is out of date.
+            if (code === '22023') setReloadKey((k) => k + 1);
+        } finally {
+            setUpdatingId(null);
         }
     }
-
-    const filteredReports = reports.filter((r) => {
-        const matchesSearch =
-            r.type?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            r.description?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            r.location?.toLowerCase().includes(searchQuery.toLowerCase());
-
-        const matchesStatus = statusFilter === 'all' || r.status === statusFilter;
-
-        return matchesSearch && matchesStatus;
-    });
-
-    const getSeverityColor = (severity: string) => {
-        switch (severity?.toLowerCase()) {
-            case 'critical':
-                return 'bg-red-100 text-red-700';
-            case 'high':
-                return 'bg-orange-100 text-orange-700';
-            case 'medium':
-                return 'bg-yellow-100 text-yellow-700';
-            case 'low':
-                return 'bg-blue-100 text-blue-700';
-            default:
-                return 'bg-gray-100 text-gray-700';
-        }
-    };
-
-    const getStatusColor = (status: string) => {
-        switch (status?.toLowerCase()) {
-            case 'verified':
-            case 'resolved':
-                return 'bg-green-100 text-green-700';
-            case 'pending':
-            case 'submitted':
-                return 'bg-yellow-100 text-yellow-700';
-            case 'rejected':
-                return 'bg-red-100 text-red-700';
-            default:
-                return 'bg-gray-100 text-gray-700';
-        }
-    };
 
     if (authLoading || !user) {
         return (
@@ -113,16 +321,10 @@ export default function ReportsPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
+        <div>
+            <div className="bg-white border-b border-gray-200">
                 <div className="max-w-7xl mx-auto px-6 py-4">
                     <div className="flex items-center gap-4">
-                        <Link
-                            href="/dashboard"
-                            className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-                        >
-                            <ArrowLeft className="w-5 h-5 text-gray-600" />
-                        </Link>
                         <div className="flex items-center gap-3">
                             <div className="w-10 h-10 bg-gradient-to-br from-orange-600 to-red-600 rounded-lg flex items-center justify-center">
                                 <AlertTriangle className="w-5 h-5 text-white" />
@@ -134,7 +336,7 @@ export default function ReportsPage() {
                         </div>
                     </div>
                 </div>
-            </header>
+            </div>
 
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Filters */}
@@ -143,23 +345,46 @@ export default function ReportsPage() {
                         <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                         <input
                             type="text"
-                            placeholder="Search reports..."
-                            value={searchQuery}
-                            onChange={(e) => setSearchQuery(e.target.value)}
-                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                            placeholder="Search by hazard, description, location or reporter..."
+                            value={searchInput}
+                            onChange={(e) => setSearchInput(e.target.value)}
+                            aria-label="Search reports"
+                            className="w-full pl-12 pr-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                         />
                     </div>
 
                     <select
                         value={statusFilter}
-                        onChange={(e) => setStatusFilter(e.target.value)}
-                        className="px-4 py-3 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                        onChange={(e) => {
+                            setStatusFilter(e.target.value as StatusFilter);
+                            setPage(0);
+                        }}
+                        aria-label="Filter reports by status"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
                     >
                         <option value="all">All Status</option>
-                        <option value="pending">Pending</option>
-                        <option value="verified">Verified</option>
-                        <option value="resolved">Resolved</option>
-                        <option value="rejected">Rejected</option>
+                        {REPORT_STATUSES.map((s) => (
+                            <option key={s} value={s}>
+                                {capitalize(s)}
+                            </option>
+                        ))}
+                    </select>
+
+                    <select
+                        value={hazardFilter}
+                        onChange={(e) => {
+                            setHazardFilter(e.target.value);
+                            setPage(0);
+                        }}
+                        aria-label="Filter reports by hazard"
+                        className="px-4 py-3 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                    >
+                        <option value="all">All Hazards</option>
+                        {REPORT_HAZARDS.map((h) => (
+                            <option key={h.name} value={h.name}>
+                                {h.name}
+                            </option>
+                        ))}
                     </select>
                 </div>
 
@@ -170,87 +395,217 @@ export default function ReportsPage() {
                     </div>
                 ) : (
                     <div className="space-y-4">
-                        {filteredReports.length === 0 ? (
+                        {reports.length === 0 ? (
                             <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-12 text-center">
                                 <AlertTriangle className="w-12 h-12 text-gray-400 mx-auto mb-4" />
                                 <p className="text-gray-500">No reports found</p>
                             </div>
                         ) : (
-                            filteredReports.map((report) => (
-                                <div
-                                    key={report.$id}
-                                    className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow"
-                                >
-                                    <div className="flex items-start justify-between mb-4">
-                                        <div className="flex-1">
-                                            <div className="flex items-center gap-3 mb-2">
-                                                <h3 className="text-lg font-semibold text-gray-900">{report.type}</h3>
-                                                <span
-                                                    className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getSeverityColor(
-                                                        report.severity
-                                                    )}`}
-                                                >
-                                                    {report.severity}
-                                                </span>
-                                                <span
-                                                    className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(
-                                                        report.status
-                                                    )}`}
-                                                >
-                                                    {report.status}
-                                                </span>
-                                            </div>
-                                            <p className="text-gray-700 mb-3">{report.description}</p>
-                                            <div className="flex items-center gap-6 text-sm text-gray-500">
-                                                {report.location && (
+                            reports.map((report) => {
+                                const place = [report.ward, report.lga, report.state].filter(Boolean).join(', ');
+                                return (
+                                    <div
+                                        key={report.id}
+                                        className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow"
+                                    >
+                                        <div className="flex items-start justify-between mb-4">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex flex-wrap items-center gap-3 mb-2">
+                                                    <h3 className="text-lg font-semibold text-gray-900">
+                                                        {capitalize(report.hazardType)}
+                                                    </h3>
+                                                    {report.severity && (
+                                                        <span
+                                                            className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getSeverityColor(
+                                                                report.severity
+                                                            )}`}
+                                                        >
+                                                            {capitalize(report.severity)}
+                                                        </span>
+                                                    )}
+                                                    <span
+                                                        className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(
+                                                            report.status
+                                                        )}`}
+                                                    >
+                                                        {capitalize(report.status)}
+                                                    </span>
+                                                    {report.isVerificationRequest && (
+                                                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-sky-100 text-sky-700">
+                                                            Verification request
+                                                        </span>
+                                                    )}
+                                                    {report.isAlert && (
+                                                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-red-600 text-white">
+                                                            Alert
+                                                        </span>
+                                                    )}
+                                                    {report.escalated && (
+                                                        <span className="inline-flex items-center px-3 py-1 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
+                                                            Escalated
+                                                        </span>
+                                                    )}
+                                                    {report.verificationCount > 0 && (
+                                                        <span className="text-xs text-gray-500">
+                                                            {report.verificationCount} verification{report.verificationCount === 1 ? '' : 's'}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <p className="text-gray-700 mb-3 whitespace-pre-line">
+                                                    {report.description || 'No description provided.'}
+                                                </p>
+                                                <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-500">
+                                                    {(report.location || place) && (
+                                                        <div className="flex items-center gap-2">
+                                                            <MapPin className="w-4 h-4 flex-shrink-0" />
+                                                            <span>
+                                                                {[report.location, place].filter(Boolean).join(' — ')}
+                                                            </span>
+                                                        </div>
+                                                    )}
+                                                    {report.reporterName && (
+                                                        <div className="flex items-center gap-2">
+                                                            <User className="w-4 h-4 flex-shrink-0" />
+                                                            <span>{report.reporterName}</span>
+                                                        </div>
+                                                    )}
                                                     <div className="flex items-center gap-2">
-                                                        <MapPin className="w-4 h-4" />
-                                                        <span>{report.location}</span>
+                                                        <Clock className="w-4 h-4 flex-shrink-0" />
+                                                        <span>
+                                                            {report.submittedAt ? report.submittedAt.toLocaleString() : 'Unknown date'}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                {report.imageUrls.length > 0 && (
+                                                    <div className="flex flex-wrap gap-2 mt-4">
+                                                        {report.imageUrls.map((url, i) => (
+                                                            <a
+                                                                key={url}
+                                                                href={url}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="block w-20 h-20 rounded-lg overflow-hidden border border-gray-200 hover:opacity-90 transition-opacity"
+                                                            >
+                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Supabase Storage URLs */}
+                                                                <img
+                                                                    src={url}
+                                                                    alt={`${report.hazardType} report image ${i + 1}`}
+                                                                    loading="lazy"
+                                                                    className="w-full h-full object-cover"
+                                                                />
+                                                            </a>
+                                                        ))}
                                                     </div>
                                                 )}
-                                                <div className="flex items-center gap-2">
-                                                    <Clock className="w-4 h-4" />
-                                                    <span>{new Date(report.$createdAt).toLocaleString()}</span>
-                                                </div>
                                             </div>
                                         </div>
-                                    </div>
 
-                                    {/* Actions */}
-                                    {report.status !== 'verified' && report.status !== 'resolved' && (
-                                        <div className="flex gap-2 pt-4 border-t border-gray-100">
-                                            <button
-                                                onClick={() => updateReportStatus(report.$id, 'verified')}
-                                                className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors text-sm font-medium"
-                                            >
-                                                Verify
-                                            </button>
-                                            <button
-                                                onClick={() => updateReportStatus(report.$id, 'resolved')}
-                                                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors text-sm font-medium"
-                                            >
-                                                Resolve
-                                            </button>
-                                            <button
-                                                onClick={() => updateReportStatus(report.$id, 'rejected')}
-                                                className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors text-sm font-medium"
-                                            >
-                                                Reject
-                                            </button>
+                                        {/* Actions */}
+                                        <div className="flex flex-wrap gap-2 pt-4 border-t border-gray-100">
+                                            {ACTION_ORDER.filter((s) => s !== report.status).map((s) => (
+                                                <button
+                                                    key={s}
+                                                    onClick={() => requestStatusChange(report, s)}
+                                                    disabled={updatingId !== null}
+                                                    className={`px-4 py-2 text-white rounded-lg transition-colors text-sm font-medium disabled:opacity-50 ${STATUS_ACTIONS[s].className}`}
+                                                >
+                                                    {updatingId === report.id ? (
+                                                        <Loader2 className="w-4 h-4 animate-spin" aria-label="Updating" />
+                                                    ) : (
+                                                        STATUS_ACTIONS[s].label
+                                                    )}
+                                                </button>
+                                            ))}
                                         </div>
-                                    )}
-                                </div>
-                            ))
+                                    </div>
+                                );
+                            })
                         )}
 
-                        <div className="bg-white rounded-xl shadow-sm border border-gray-100 px-6 py-4">
-                            <p className="text-sm text-gray-600">
-                                Showing {filteredReports.length} of {reports.length} reports
-                            </p>
-                        </div>
+                        {(reports.length > 0 || page > 0) && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden">
+                                <Pagination
+                                    page={page}
+                                    pageSize={PAGE_SIZE}
+                                    total={totalCount}
+                                    itemCount={reports.length}
+                                    noun={statusFilter === 'all' ? 'reports' : `${statusFilter} reports`}
+                                    disabled={loading}
+                                    onPageChange={setPage}
+                                />
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
+
+            {/* Reject / Reset to Pending confirmation */}
+            {confirmAction && (
+                <Modal
+                    title={confirmAction.status === 'rejected' ? 'Reject Report' : 'Reset to Pending'}
+                    titleClassName={`text-xl font-bold mb-4 ${
+                        confirmAction.status === 'rejected' ? 'text-red-600' : 'text-gray-900'
+                    }`}
+                    onClose={() => setConfirmAction(null)}
+                >
+                    <form
+                        onSubmit={(e) => {
+                            e.preventDefault();
+                            runConfirmedAction();
+                        }}
+                    >
+                        {confirmAction.status === 'rejected' ? (
+                            <>
+                                <p className="text-gray-600 mb-4 leading-relaxed">
+                                    Reject this {confirmAction.report.hazardType} report? The reporter will see it as
+                                    rejected.
+                                </p>
+                                <label
+                                    htmlFor="rejection-reason"
+                                    className="block text-sm font-medium text-gray-700 mb-1"
+                                >
+                                    Reason <span className="text-gray-400 font-normal">(optional)</span>
+                                </label>
+                                <textarea
+                                    id="rejection-reason"
+                                    rows={4}
+                                    maxLength={REJECTION_REASON_MAX}
+                                    value={rejectionReason}
+                                    onChange={(e) => setRejectionReason(e.target.value)}
+                                    placeholder="e.g. Duplicate of an existing report, insufficient detail..."
+                                    className="w-full mb-6 px-4 py-2.5 rounded-lg border border-gray-300 bg-white text-gray-900 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none"
+                                />
+                            </>
+                        ) : (
+                            <p className="text-gray-600 mb-6 leading-relaxed">
+                                Move this {confirmAction.report.hazardType} report back to pending? All peer
+                                verification votes
+                                {confirmAction.report.verificationCount > 0
+                                    ? ` (${confirmAction.report.verificationCount})`
+                                    : ''}{' '}
+                                and the current decision will be cleared, and escalation will be rescheduled.
+                            </p>
+                        )}
+                        <div className="flex gap-3 justify-end">
+                            <button
+                                type="button"
+                                onClick={() => setConfirmAction(null)}
+                                className="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 hover:bg-gray-50 font-medium transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                type="submit"
+                                className={`px-4 py-2 rounded-lg font-medium text-white transition-colors ${
+                                    STATUS_ACTIONS[confirmAction.status].className
+                                }`}
+                            >
+                                {STATUS_ACTIONS[confirmAction.status].label}
+                            </button>
+                        </div>
+                    </form>
+                </Modal>
+            )}
         </div>
     );
 }

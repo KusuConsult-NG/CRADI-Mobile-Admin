@@ -2,150 +2,90 @@
 
 ## Prerequisites
 
-- Node.js 20+ installed
-- Appwrite Cloud account
-- Access to CRADI Mobile Appwrite project
+- Node.js 22+
+- A Supabase project with the CRADI schema applied
+  (`CRADI-mobile/supabase/deploy/schema.sql`, or the migrations under
+  `CRADI-mobile/supabase/migrations/`)
 
-## 1. Install Dependencies
+For a first-time deployment of the whole system, follow
+`CRADI-mobile/docs/DEPLOYMENT.md`; this file covers the admin panel alone.
+
+## 1. Install
 
 ```bash
-cd /Users/mac/cradi-admin
 npm install
 ```
 
-## 2. Configure Environment Variables
+## 2. Configure Supabase
 
-The `.env.local` file should already contain:
+From Supabase → **Project Settings → API**, copy the values into `.env.local`:
 
 ```env
-NEXT_PUBLIC_APP_NAME=CRADI Admin Panel
-NEXT_PUBLIC_APPWRITE_ENDPOINT=https://fra.cloud.appwrite.io/v1
-NEXT_PUBLIC_APPWRITE_PROJECT=6941cdb400050e7249d5
-NEXT_PUBLIC_DATABASE_ID=6941e2c2003705bb5a25
+NEXT_PUBLIC_SUPABASE_URL=https://<project-ref>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<anon public key>
+SUPABASE_SERVICE_ROLE_KEY=<service_role key>   # server only, never commit
 ```
 
-## 3. Set Up Database Permissions
+Without the two `NEXT_PUBLIC_*` values the app shows a configuration error screen.
+Without `SUPABASE_SERVICE_ROLE_KEY` the pages still load, but approve / block /
+role change / delete return `500 Server is not configured for admin actions.`
 
-### Get API Key
+In Supabase → **Authentication → Providers**, make sure Email sign-in is enabled.
 
-1. Go to [Appwrite Console](https://cloud.appwrite.io/console)
-2. Select CRADI Mobile project
-3. Navigate to **Overview** → **API Keys**
-4. Create new API key with scopes:
-   - `databases.read`
-   - `databases.write`
-   - `users.read`
-   - `users.write`
+## 3. Grant admin access
 
-### Run Permission Setup Script
+The user must already exist in Supabase Auth (signed up in the mobile app, or
+created under Authentication → Users). Then:
 
 ```bash
-cd /Users/mac/cradi-admin
-APPWRITE_API_KEY=your_api_key npm run setup:permissions
+node --env-file=.env.local scripts/set-admin.mjs admin@example.org
+# or, with the variables exported in your shell:
+npm run set:admin -- admin@example.org
 ```
 
-This will configure permissions for all collections according to the defined rules.
+This sets `role = 'admin'`, `is_approved = true`, `is_disabled = false` on the
+user's `profiles` row (and clears any ban). Sign in with that account.
+The script refuses accounts whose email (or phone) has not been confirmed.
 
-### Verify Permissions
-
-```bash
-APPWRITE_API_KEY=your_api_key npm run check:permissions
-```
-
-## 4. Create Admin User
-
-### Option A: Using Script (Recommended)
-
-```bash
-APPWRITE_API_KEY=your_api_key npm run create:admin
-```
-
-Follow the prompts to enter:
-- Name
-- Email
-- Password (min 8 characters)
-
-The script will:
-- Create the user account
-- Add `admin` label
-- Mark email as verified
-
-### Option B: Manual Creation
-
-1. Go to Appwrite Console → Auth → Users
-2. Click "Create User"
-3. Enter email, password, and name
-4. After creation, click the user to edit
-5. Add label: `admin`
-6. MarkEmail as verified
-
-## 5. Start Admin Panel
+## 4. Run locally
 
 ```bash
 npm run dev
 ```
 
-Access at: http://localhost:3000
+Open http://localhost:3000 and sign in with the admin account.
 
-## 6. Login
+## Deployment (Railway)
 
-Use the admin credentials created in step 4.
+`railway.json` configures the service: Nixpacks builder, `npm run build`,
+`npm start` (listens on Railway's `$PORT`), healthcheck `GET /api/health`.
 
-The admin panel will:
-- ✅ Verify `admin` label on login
-- ✅ Reject non-admin users
-- ✅ Provide access to all admin features
+1. Create a Railway service from this repository
+   (`KusuConsult-NG/CRADI-Mobile-Admin`), branch `supabase-migration`, root
+   directory = repository root.
+2. Add the variables `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   and `SUPABASE_SERVICE_ROLE_KEY` **before the first deploy**. The
+   `NEXT_PUBLIC_*` values are inlined into the bundle at build time, so setting
+   or changing them later does nothing until you trigger a new deploy — a
+   restart re-uses the same bundle. Note that `GET /api/health` returns
+   `{"ok": true}` unconditionally, so the Railway healthcheck passes even when
+   the app is misconfigured; verify by opening the site and signing in.
+3. Generate a public domain under the service's **Networking** settings.
+4. Optionally add that domain to Supabase → Authentication → URL Configuration
+   (only needed for auth emails / redirects; password sign-in works without it).
 
 ## Troubleshooting
 
-### "Access denied. Admin privileges required"
-
-**Cause**: User account doesn't have the `admin` label.
-
-**Solution**:
-1. Go to Appwrite Console
-2. Navigate to Auth → Users
-3. Find the user account
-4. Edit and add label: `admin`
-
-### "Collection not found" in permission setup
-
-**Cause**: Collection doesn't exist in the database yet.
-
-**Solution**: 
-- Collections are created by CRADI Mobile app
-- Ensure CRADI Mobile has run at least once
-- Or skip missing collections (script will continue)
-
-### Permission script errors
-
-**Cause**: Invalid or insufficient API key permissions.
-
-**Solution**:
-- Verify API key has `databases.write` and `users.write` scopes
-- Create new API key with all required permissions
-
-## Security Notes
-
-> [!WARNING]
-> **API Key Security**
-> 
-> - Never commit API keys to version control
-> - Use environment variables for API keys
-> - Revoke API keys when no longer needed
-
-> [!IMPORTANT]
-> **Admin Label Protection**
-> 
-> - Admin labels can only be set via Appwrite Console or Server SDK
-> - Client applications (mobile app) cannot add admin labels
-> - This prevents privilege escalation attacks
-
-## Next Steps
-
-After setup:
-1. Test login with admin credentials
-2. Verify dashboard loads with statistics
-3. Test user management features
-4. Test report verification workflow
-5. Review walkthrough document for usage guide
+- **"Access denied. This account is not an approved, active administrator."** –
+  run `set:admin` for that email (or set `role`, `is_approved`, `is_disabled`
+  in the `profiles` table), then sign in again.
+- **"This account has been disabled."** – the Auth user is banned (blocked in the
+  panel); unblock it from another admin account or rerun `set:admin`.
+- **Empty lists / failed counts** – RLS only returns data to approved admins;
+  check the profile row, and that the migration has been applied.
+- **"Configuration required" screen instead of the login page** – the
+  `NEXT_PUBLIC_*` variables were missing when the bundle was built. Set them and
+  redeploy (not restart). If only the URL is wrong, the Content-Security-Policy
+  built from it (`lib/csp.ts`) blocks every request to Supabase and sign-in
+  fails with no visible error — check the browser console.
+- **"Server is not configured for admin actions."** – set `SUPABASE_SERVICE_ROLE_KEY`.

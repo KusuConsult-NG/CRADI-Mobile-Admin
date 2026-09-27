@@ -12,6 +12,10 @@
 
 # testing
 /coverage
+/test-results/
+/test-results-highlights/
+/e2e/highlights/
+/playwright-report/
 
 # next.js
 /.next/
@@ -32,6 +36,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -42,3 +47,7 @@ next-env.d.ts
 
 # Scripts with embedded credentials
 /scripts/create-default-admin.js
+
+# Credential files
+*service-account*.json
+*serviceAccount*.json

@@ -1,78 +1,118 @@
 'use client';
 
 import { useAuth } from '@/lib/auth-context';
-import { useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
-import { databases, DATABASE_ID, COLLECTIONS, Query } from '@/lib/appwrite';
+import { getSupabase } from '@/lib/supabase';
+import { TABLES } from '@/lib/constants';
 import {
-    LayoutDashboard,
     Users,
     AlertTriangle,
     Phone,
     BookOpen,
-    LogOut,
     Loader2,
-    TrendingUp,
     Clock,
     CheckCircle2,
-    XCircle,
+    Megaphone,
+    Landmark,
+    Settings,
+    Newspaper,
 } from 'lucide-react';
 import Link from 'next/link';
+import toast from 'react-hot-toast';
+
+interface Stats {
+    totalUsers: number | null;
+    totalReports: number | null;
+    pendingReports: number | null;
+    approvedReports: number | null;
+    emergencyContacts: number | null;
+    knowledgeArticles: number | null;
+    activeAlerts: number | null;
+}
+
+const EMPTY_STATS: Stats = {
+    totalUsers: null,
+    totalReports: null,
+    pendingReports: null,
+    approvedReports: null,
+    emergencyContacts: null,
+    knowledgeArticles: null,
+    activeAlerts: null,
+};
+
+type CountFilter = { column: string; op: 'eq' | 'in'; value: string | boolean | string[] };
+
+/** Exact row count (HEAD request, no rows transferred), subject to RLS. */
+async function countOf(table: string, filter?: CountFilter): Promise<number> {
+    let query = getSupabase().from(table).select('*', { count: 'exact', head: true });
+    if (filter?.op === 'eq') query = query.eq(filter.column, filter.value);
+    if (filter?.op === 'in' && Array.isArray(filter.value)) query = query.in(filter.column, filter.value);
+    const { count, error } = await query;
+    if (error) throw error;
+    return count ?? 0;
+}
+
+const STAT_KEYS: (keyof Stats)[] = [
+    'totalUsers',
+    'totalReports',
+    'pendingReports',
+    'approvedReports',
+    'emergencyContacts',
+    'knowledgeArticles',
+    'activeAlerts',
+];
+
+/** Loads each count independently so one failure doesn't blank the others. */
+async function loadStats(): Promise<{ stats: Stats; failures: number; total: number }> {
+    const results = await Promise.allSettled([
+        countOf(TABLES.PROFILES),
+        countOf(TABLES.REPORTS),
+        countOf(TABLES.REPORTS, { column: 'status', op: 'eq', value: 'pending' }),
+        countOf(TABLES.REPORTS, { column: 'status', op: 'in', value: ['approved', 'verified'] }),
+        countOf(TABLES.CONTACTS),
+        countOf(TABLES.KNOWLEDGE_BASE),
+        countOf(TABLES.ALERTS, { column: 'is_active', op: 'eq', value: true }),
+    ]);
+
+    const stats: Stats = { ...EMPTY_STATS };
+    let failures = 0;
+    results.forEach((result, i) => {
+        if (result.status === 'fulfilled') {
+            stats[STAT_KEYS[i]] = result.value;
+        } else {
+            failures += 1;
+            console.error(`Failed to load ${STAT_KEYS[i]}:`, result.reason);
+        }
+    });
+    return { stats, failures, total: STAT_KEYS.length };
+}
+
+function formatStat(value: number | null): string {
+    return value === null ? '—' : value.toLocaleString();
+}
 
 export default function DashboardPage() {
-    const { user, loading: authLoading, logout } = useAuth();
-    const router = useRouter();
-    const [stats, setStats] = useState({
-        totalUsers: 0,
-        totalReports: 0,
-        pendingReports: 0,
-        resolvedReports: 0,
-        emergencyContacts: 0,
-        knowledgeArticles: 0,
-    });
+    const { user, loading: authLoading } = useAuth();
+    const [stats, setStats] = useState<Stats>(EMPTY_STATS);
     const [loading, setLoading] = useState(true);
 
     useEffect(() => {
-        if (!authLoading && !user) {
-            router.push('/login');
-        } else if (user) {
-            fetchStats();
-        }
-    }, [user, authLoading, router]);
+        // Signed-out users are redirected by app/dashboard/layout.tsx.
+        if (!user) return;
 
-    async function fetchStats() {
-        try {
-            setLoading(true);
-
-            const [users, reports, emergencyContacts, knowledgeBase] = await Promise.all([
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.USERS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.REPORTS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.EMERGENCY_CONTACTS),
-                databases.listDocuments(DATABASE_ID, COLLECTIONS.KNOWLEDGE_BASE),
-            ]);
-
-            // Count reports by status
-            const pendingReports = reports.documents.filter(
-                (r: any) => r.status === 'pending' || r.status === 'submitted'
-            ).length;
-            const resolvedReports = reports.documents.filter(
-                (r: any) => r.status === 'resolved' || r.status === 'verified'
-            ).length;
-
-            setStats({
-                totalUsers: users.total,
-                totalReports: reports.total,
-                pendingReports,
-                resolvedReports,
-                emergencyContacts: emergencyContacts.total,
-                knowledgeArticles: knowledgeBase.total,
-            });
-        } catch (error) {
-            console.error('Error fetching stats:', error);
-        } finally {
+        let cancelled = false;
+        void loadStats().then(({ stats: next, failures, total }) => {
+            if (cancelled) return;
+            setStats(next);
             setLoading(false);
-        }
-    }
+            if (failures > 0) {
+                toast.error(`Could not load ${failures} of ${total} statistics.`);
+            }
+        });
+        return () => {
+            cancelled = true;
+        };
+    }, [user]);
 
     if (authLoading || !user) {
         return (
@@ -83,36 +123,7 @@ export default function DashboardPage() {
     }
 
     return (
-        <div className="min-h-screen bg-gray-50">
-            {/* Header */}
-            <header className="bg-white border-b border-gray-200 sticky top-0 z-10 shadow-sm">
-                <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-gradient-to-br from-[#E63946] to-[#9D0208] rounded-lg flex items-center justify-center">
-                            <LayoutDashboard className="w-5 h-5 text-white" />
-                        </div>
-                        <div>
-                            <h1 className="text-xl font-bold text-gray-900">EWER Admin</h1>
-                            <p className="text-xs text-gray-600">Early Warning and Emergency Response</p>
-                        </div>
-                    </div>
-
-                    <div className="flex items-center gap-4">
-                        <div className="text-right">
-                            <p className="text-sm font-medium text-gray-900">{user.name || user.email}</p>
-                            <p className="text-xs text-gray-500">Administrator</p>
-                        </div>
-                        <button
-                            onClick={logout}
-                            className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            Logout
-                        </button>
-                    </div>
-                </div>
-            </header>
-
+        <div>
             <div className="max-w-7xl mx-auto px-6 py-8">
                 {/* Welcome Section */}
                 <div className="mb-8">
@@ -120,7 +131,7 @@ export default function DashboardPage() {
                         Welcome back, {user.name || 'Admin'}!
                     </h2>
                     <p className="text-gray-600">
-                        Here's an overview of the CRADI system status and recent activity.
+                        Here&apos;s an overview of the CRADI system status and recent activity.
                     </p>
                 </div>
 
@@ -138,9 +149,8 @@ export default function DashboardPage() {
                                     <div className="w-12 h-12 bg-red-50 rounded-lg flex items-center justify-center">
                                         <Users className="w-6 h-6 text-[#E63946]" />
                                     </div>
-                                    <TrendingUp className="w-5 h-5 text-green-500" />
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.totalUsers}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalUsers)}</h3>
                                 <p className="text-gray-600 text-sm">Total Users</p>
                             </div>
 
@@ -151,7 +161,7 @@ export default function DashboardPage() {
                                         <AlertTriangle className="w-6 h-6 text-orange-600" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.totalReports}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalReports)}</h3>
                                 <p className="text-gray-600 text-sm">Total Reports</p>
                             </div>
 
@@ -162,7 +172,7 @@ export default function DashboardPage() {
                                         <Clock className="w-6 h-6 text-yellow-600" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.pendingReports}</h3>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.pendingReports)}</h3>
                                 <p className="text-gray-600 text-sm">Pending Reports</p>
                             </div>
 
@@ -173,8 +183,8 @@ export default function DashboardPage() {
                                         <CheckCircle2 className="w-6 h-6 text-[#06D6A0]" />
                                     </div>
                                 </div>
-                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{stats.resolvedReports}</h3>
-                                <p className="text-gray-600 text-sm">Resolved Reports</p>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.approvedReports)}</h3>
+                                <p className="text-gray-600 text-sm">Approved / Verified Reports</p>
                             </div>
 
                             {/* Emergency Contacts */}
@@ -185,7 +195,7 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">
-                                    {stats.emergencyContacts}
+                                    {formatStat(stats.emergencyContacts)}
                                 </h3>
                                 <p className="text-gray-600 text-sm">Emergency Contacts</p>
                             </div>
@@ -198,16 +208,27 @@ export default function DashboardPage() {
                                     </div>
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">
-                                    {stats.knowledgeArticles}
+                                    {formatStat(stats.knowledgeArticles)}
                                 </h3>
                                 <p className="text-gray-600 text-sm">Knowledge Articles</p>
+                            </div>
+
+                            {/* Active Alerts */}
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                                <div className="flex items-center justify-between mb-4">
+                                    <div className="w-12 h-12 bg-rose-100 rounded-lg flex items-center justify-center">
+                                        <Megaphone className="w-6 h-6 text-rose-600" />
+                                    </div>
+                                </div>
+                                <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.activeAlerts)}</h3>
+                                <p className="text-gray-600 text-sm">Active Alerts</p>
                             </div>
                         </div>
 
                         {/* Quick Actions */}
                         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                             <h3 className="text-lg font-semibold text-gray-900 mb-4">Quick Actions</h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                 <Link
                                     href="/dashboard/users"
                                     className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-[#E63946] hover:bg-red-50 transition-all group"
@@ -229,22 +250,52 @@ export default function DashboardPage() {
                                 </Link>
 
                                 <Link
-                                    href="/dashboard/contacts"
-                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-purple-500 hover:bg-purple-50 transition-all group"
-                                >
-                                    <Phone className="w-5 h-5 text-gray-600 group-hover:text-purple-600" />
-                                    <span className="font-medium text-gray-700 group-hover:text-purple-700">
-                                        Emergency Contacts
-                                    </span>
-                                </Link>
-
-                                <Link
                                     href="/dashboard/knowledge"
                                     className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-indigo-500 hover:bg-indigo-50 transition-all group"
                                 >
                                     <BookOpen className="w-5 h-5 text-gray-600 group-hover:text-indigo-600" />
                                     <span className="font-medium text-gray-700 group-hover:text-indigo-700">
                                         Knowledge Base
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/news"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-sky-500 hover:bg-sky-50 transition-all group"
+                                >
+                                    <Newspaper className="w-5 h-5 text-gray-600 group-hover:text-sky-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-sky-700">
+                                        News Links
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/alerts"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-rose-500 hover:bg-rose-50 transition-all group"
+                                >
+                                    <Megaphone className="w-5 h-5 text-gray-600 group-hover:text-rose-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-rose-700">
+                                        Community Alerts
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/authorities"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-emerald-500 hover:bg-emerald-50 transition-all group"
+                                >
+                                    <Landmark className="w-5 h-5 text-gray-600 group-hover:text-emerald-600" />
+                                    <span className="font-medium text-gray-700 group-hover:text-emerald-700">
+                                        SMS Authorities
+                                    </span>
+                                </Link>
+
+                                <Link
+                                    href="/dashboard/settings"
+                                    className="flex items-center gap-3 p-4 rounded-lg border-2 border-gray-200 hover:border-slate-500 hover:bg-slate-50 transition-all group"
+                                >
+                                    <Settings className="w-5 h-5 text-gray-600 group-hover:text-slate-700" />
+                                    <span className="font-medium text-gray-700 group-hover:text-slate-800">
+                                        App Settings
                                     </span>
                                 </Link>
                             </div>
