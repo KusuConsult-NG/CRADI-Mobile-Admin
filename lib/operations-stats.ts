@@ -152,8 +152,10 @@ export async function loadOperationsStats(now = Date.now()): Promise<OperationsS
         getSupabase()
             .from(TABLES.REPORTS)
             .select('submitted_at,approved_at,rejected_at')
+            // Values are quoted: PostgREST splits `or` terms on dots, and an
+            // ISO timestamp carries one in its milliseconds.
             .or(
-                `submitted_at.gte.${windowStart},approved_at.gte.${windowStart},rejected_at.gte.${windowStart}`,
+                `submitted_at.gte."${windowStart}",approved_at.gte."${windowStart}",rejected_at.gte."${windowStart}"`,
             ),
     ]);
 

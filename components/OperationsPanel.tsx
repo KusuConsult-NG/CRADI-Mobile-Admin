@@ -223,6 +223,10 @@ function FlowChart({ weeks }: { weeks: WeekPoint[] }) {
 
 export default function OperationsPanel() {
     const [stats, setStats] = useState<OperationsStats | null>(null);
+    // Distinct from `stats === null`. Without this a failed load left the
+    // spinner up forever, which looks identical to "still loading" and is
+    // exactly the kind of silent failure this panel exists to surface.
+    const [failure, setFailure] = useState<string | null>(null);
     const [showTable, setShowTable] = useState(false);
 
     useEffect(() => {
@@ -231,10 +235,11 @@ export default function OperationsPanel() {
             .then((s) => {
                 if (!cancelled) setStats(s);
             })
-            .catch(() => {
-                // loadOperationsStats settles every query itself; reaching here
-                // means something outside them threw, so show the empty state.
-                if (!cancelled) setStats(null);
+            .catch((err: unknown) => {
+                // loadOperationsStats settles every query itself, so reaching
+                // here means something outside them threw. Say so, with the
+                // message, rather than spinning.
+                if (!cancelled) setFailure(err instanceof Error ? err.message : String(err));
             });
         return () => {
             cancelled = true;
@@ -246,13 +251,37 @@ export default function OperationsPanel() {
         [stats],
     );
 
+    if (failure) {
+        return (
+            <section aria-labelledby="operations-heading" className="mb-8">
+                <h2 id="operations-heading" className="text-lg font-semibold text-gray-900 mb-4">
+                    Operations
+                </h2>
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                    <p className="text-sm text-red-700">
+                        The operations figures could not be loaded.
+                    </p>
+                    <p className="mt-1 text-xs text-gray-500 break-all">{failure}</p>
+                </div>
+            </section>
+        );
+    }
+
     if (!stats) {
         return (
-            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 mb-8">
-                <div className="flex items-center justify-center py-8 text-gray-400">
-                    <Loader2 className="w-6 h-6 animate-spin" />
+            <section aria-labelledby="operations-heading" className="mb-8">
+                <h2 id="operations-heading" className="text-lg font-semibold text-gray-900 mb-4">
+                    Operations
+                </h2>
+                <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
+                    {/* The label matters: a bare spinner is indistinguishable
+                        from the panel being absent when you read the page. */}
+                    <div className="flex items-center justify-center gap-3 py-8 text-gray-500">
+                        <Loader2 className="w-5 h-5 animate-spin" />
+                        <span className="text-sm">Loading operations figures…</span>
+                    </div>
                 </div>
-            </div>
+            </section>
         );
     }
 
