@@ -123,11 +123,31 @@ function reportsQuery() {
  * single failure blanks one number rather than the whole panel — the same rule
  * the stat cards above it follow.
  */
+/**
+ * Rejects if `work` has not settled within `ms`.
+ *
+ * Promise.allSettled waits for every query, and the browser Supabase client
+ * sets no timeout — so one request that hangs rather than failing leaves the
+ * panel loading indefinitely, which reads as "the section isn't there". A
+ * bounded wait turns that into a visible error.
+ */
+function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T> {
+    return Promise.race([
+        work,
+        new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error(`${what} timed out after ${ms / 1000}s`)), ms),
+        ),
+    ]);
+}
+
+export const LOAD_TIMEOUT_MS = 15_000;
+
 export async function loadOperationsStats(now = Date.now()): Promise<OperationsStats> {
     const iso = (ms: number) => new Date(ms).toISOString();
     const windowStart = iso(weekStart(now) - (FLOW_WEEKS - 1) * 7 * DAY);
 
-    const results = await Promise.allSettled([
+    const results = await withDeadline(
+        Promise.allSettled([
         countReports((q) => q.eq('status', 'pending').gte('submitted_at', iso(now - DAY))),
         countReports((q) =>
             q
@@ -157,7 +177,10 @@ export async function loadOperationsStats(now = Date.now()): Promise<OperationsS
             .or(
                 `submitted_at.gte."${windowStart}",approved_at.gte."${windowStart}",rejected_at.gte."${windowStart}"`,
             ),
-    ]);
+        ]),
+        LOAD_TIMEOUT_MS,
+        'Loading the operations figures',
+    );
 
     let degraded = false;
     const num = (i: number): number | null => {
