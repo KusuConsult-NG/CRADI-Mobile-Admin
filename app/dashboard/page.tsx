@@ -18,6 +18,7 @@ import {
     Newspaper,
 } from 'lucide-react';
 import Link from 'next/link';
+import OperationsPanel from '@/components/OperationsPanel';
 import toast from 'react-hot-toast';
 
 interface Stats {
@@ -226,6 +227,8 @@ export default function DashboardPage() {
                                 <p className="text-gray-600 text-sm">Active Alerts</p>
                             </Link>
                         </div>
+
+                        <OperationsPanel />
 
                         {/* Quick Actions */}
                         <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">

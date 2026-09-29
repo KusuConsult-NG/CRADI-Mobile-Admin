@@ -19,7 +19,9 @@ test('dashboard shows exact counts from HEAD count requests', async ({ page, moc
     }
 
     const heads = await mock.requests({ method: 'HEAD' });
-    expect(heads).toHaveLength(7);
+    // The stat cards issue exactly these seven; the operations panel below them
+    // issues more, so assert on the cards' own queries rather than a page total.
+    expect(heads.length).toBeGreaterThanOrEqual(7);
     for (const r of heads) expect(r.prefer).toContain('count=exact');
     expect(heads.map((r) => `${r.path}?${decodeURIComponent(r.query)}`)).toEqual(
         expect.arrayContaining([
@@ -77,6 +79,12 @@ test('stat cards with a destination navigate there', async ({ page }) => {
         await page.goto('/dashboard');
         await page.getByText(label, { exact: true }).click();
         await expect(page, label).toHaveURL(new RegExp(`${href.replace('?', '\\?')}$`));
+        // Let the destination finish loading before the next hard navigation.
+        // page.goto() tears the document down mid-request, which aborts any
+        // in-flight fetch before React can run its cleanup — the page logs that
+        // as an error, and it is an artifact of the hard nav, not something a
+        // user clicking through the app would ever hit.
+        await page.waitForLoadState('networkidle');
     }
 });
 
