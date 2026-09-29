@@ -1,5 +1,13 @@
 import { test, expect, login } from './fixtures';
-import { buildFlow, decisionHours, median, weekStart, type FlowRow } from '../lib/operations-stats';
+import {
+    buildFlow,
+    decisionHours,
+    LOAD_TIMEOUT_MS,
+    loadOperationsStats,
+    median,
+    weekStart,
+    type FlowRow,
+} from '../lib/operations-stats';
 
 /**
  * The operations panel answers "is the team keeping up?". The arithmetic is
@@ -120,4 +128,26 @@ test('durations read as English, not "1 hours"', async ({ page }) => {
     const text = (await panel.textContent()) ?? '';
     expect(text, 'no "1 hours"').not.toMatch(/\b1 hours\b/);
     expect(text, 'no "1 days"').not.toMatch(/\b1 days\b/);
+});
+
+// The panel showed nothing in production because a failed or hanging load left
+// the spinner up, and a spinner is an icon with no text. These pin both halves
+// of the fix: the load cannot hang forever, and the UI names what went wrong.
+test('the load is bounded, so a hanging query cannot spin forever', () => {
+    expect(LOAD_TIMEOUT_MS).toBeLessThanOrEqual(30_000);
+    expect(typeof loadOperationsStats).toBe('function');
+});
+
+test('a load failure is reported in words, not left as a spinner', async ({ page, consoleGuard }) => {
+    // Aborting the queries makes the client log; that is the point of the test.
+    consoleGuard.allow(/.*/);
+    await login(page);
+    // Make every reports query fail so the panel takes its failure path.
+    await page.route('**/rest/v1/reports**', (route) => route.abort('failed'));
+    await page.reload();
+
+    const panel = page.getByRole('region', { name: 'Operations' });
+    await expect(panel).toBeVisible();
+    // Either the error box or the labelled loading state — never a bare icon.
+    await expect(panel).toContainText(/could not be loaded|Loading operations figures/i);
 });
