@@ -267,6 +267,10 @@ export default function UsersPage() {
                         : null;
                 if (!cancelled && map && typeof map === 'object') setConfirmed((prev) => ({ ...prev, ...map }));
             } catch (error) {
+                // Leaving the page aborts this request. That is navigation, not
+                // a failure, and the success path already ignores it — so the
+                // error path has to as well, or every visit to Users logs one.
+                if (cancelled) return;
                 console.error('Error fetching confirmation status:', error);
             }
         }

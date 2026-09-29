@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
 import { getSupabase, publicImageUrl } from '@/lib/supabase';
 import {
@@ -169,7 +170,16 @@ export default function ReportsPage() {
     const [page, setPage] = useState(0);
     const [searchInput, setSearchInput] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
-    const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    // The dashboard's stat cards link here with ?status=pending etc. An
+    // unknown or absent value falls back to 'all' rather than filtering on
+    // something the database has never heard of.
+    const searchParams = useSearchParams();
+    const requestedStatus = searchParams.get('status');
+    const initialStatus: StatusFilter =
+        requestedStatus && (REPORT_STATUSES as readonly string[]).includes(requestedStatus)
+            ? (requestedStatus as ReportStatus)
+            : 'all';
+    const [statusFilter, setStatusFilter] = useState<StatusFilter>(initialStatus);
     const [hazardFilter, setHazardFilter] = useState('all');
     const [reloadKey, setReloadKey] = useState(0);
     const [updatingId, setUpdatingId] = useState<string | null>(null);
