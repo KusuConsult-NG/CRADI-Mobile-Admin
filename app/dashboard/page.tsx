@@ -144,7 +144,7 @@ export default function DashboardPage() {
                     <>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
                             {/* Total Users */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/users" aria-label="View all users" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-red-50 rounded-lg flex items-center justify-center">
                                         <Users className="w-6 h-6 text-[#E63946]" />
@@ -152,10 +152,10 @@ export default function DashboardPage() {
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalUsers)}</h3>
                                 <p className="text-gray-600 text-sm">Total Users</p>
-                            </div>
+                            </Link>
 
                             {/* Total Reports */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/reports" aria-label="View all reports" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-orange-100 rounded-lg flex items-center justify-center">
                                         <AlertTriangle className="w-6 h-6 text-orange-600" />
@@ -163,10 +163,10 @@ export default function DashboardPage() {
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalReports)}</h3>
                                 <p className="text-gray-600 text-sm">Total Reports</p>
-                            </div>
+                            </Link>
 
                             {/* Pending Reports */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/reports?status=pending" aria-label="View pending reports" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-yellow-100 rounded-lg flex items-center justify-center">
                                         <Clock className="w-6 h-6 text-yellow-600" />
@@ -174,10 +174,10 @@ export default function DashboardPage() {
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.pendingReports)}</h3>
                                 <p className="text-gray-600 text-sm">Pending Reports</p>
-                            </div>
+                            </Link>
 
                             {/* Resolved Reports */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/reports?status=approved" aria-label="View approved reports" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-teal-50 rounded-lg flex items-center justify-center">
                                         <CheckCircle2 className="w-6 h-6 text-[#06D6A0]" />
@@ -185,10 +185,12 @@ export default function DashboardPage() {
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.approvedReports)}</h3>
                                 <p className="text-gray-600 text-sm">Approved / Verified Reports</p>
-                            </div>
+                            </Link>
 
                             {/* Emergency Contacts */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            {/* Counts public.contacts (users' own emergency contacts), which has no
+                                admin screen. No hover lift: this card is a figure, not a link. */}
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-red-50 rounded-lg flex items-center justify-center">
                                         <Phone className="w-6 h-6 text-[#9D0208]" />
@@ -201,7 +203,7 @@ export default function DashboardPage() {
                             </div>
 
                             {/* Knowledge Articles */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/knowledge" aria-label="View knowledge articles" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-indigo-100 rounded-lg flex items-center justify-center">
                                         <BookOpen className="w-6 h-6 text-indigo-600" />
@@ -211,10 +213,10 @@ export default function DashboardPage() {
                                     {formatStat(stats.knowledgeArticles)}
                                 </h3>
                                 <p className="text-gray-600 text-sm">Knowledge Articles</p>
-                            </div>
+                            </Link>
 
                             {/* Active Alerts */}
-                            <div className="bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow">
+                            <Link href="/dashboard/alerts" aria-label="View active alerts" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-rose-100 rounded-lg flex items-center justify-center">
                                         <Megaphone className="w-6 h-6 text-rose-600" />
@@ -222,7 +224,7 @@ export default function DashboardPage() {
                                 </div>
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.activeAlerts)}</h3>
                                 <p className="text-gray-600 text-sm">Active Alerts</p>
-                            </div>
+                            </Link>
                         </div>
 
                         {/* Quick Actions */}

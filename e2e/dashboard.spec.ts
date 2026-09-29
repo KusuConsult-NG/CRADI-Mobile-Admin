@@ -57,3 +57,45 @@ test('every dashboard page renders without console errors or CSP violations', as
         await page.waitForLoadState('networkidle');
     }
 });
+
+// Every stat card advertised a click with `hover:shadow-md` but was a plain
+// <div>, so the whole grid looked interactive and did nothing. The cards that
+// have somewhere to go are links now; the one that does not (Emergency
+// Contacts counts public.contacts, which has no admin screen) must not offer
+// the hover lift either.
+test('stat cards with a destination navigate there', async ({ page }) => {
+    const cards: [string, string][] = [
+        ['Total Users', '/dashboard/users'],
+        ['Total Reports', '/dashboard/reports'],
+        ['Pending Reports', '/dashboard/reports?status=pending'],
+        ['Approved / Verified Reports', '/dashboard/reports?status=approved'],
+        ['Knowledge Articles', '/dashboard/knowledge'],
+        ['Active Alerts', '/dashboard/alerts'],
+    ];
+    await login(page);
+    for (const [label, href] of cards) {
+        await page.goto('/dashboard');
+        await page.getByText(label, { exact: true }).click();
+        await expect(page, label).toHaveURL(new RegExp(`${href.replace('?', '\\?')}$`));
+    }
+});
+
+test('a stat card with no destination is not dressed as a link', async ({ page }) => {
+    await login(page);
+    const card = page
+        .getByText('Emergency Contacts', { exact: true })
+        .locator('xpath=ancestor::*[contains(@class,"rounded-xl")][1]');
+    await expect(card).toHaveCount(1);
+    // Not a link, and no hover lift promising one.
+    expect(await card.evaluate((el) => el.tagName)).toBe('DIV');
+    expect(await card.getAttribute('class')).not.toContain('hover:shadow-md');
+});
+
+test('the reports page honours ?status= and ignores a bogus one', async ({ page }) => {
+    await login(page);
+    await page.goto('/dashboard/reports?status=approved');
+    await expect(page.getByLabel('Filter reports by status')).toHaveValue('approved');
+
+    await page.goto('/dashboard/reports?status=not-a-status');
+    await expect(page.getByLabel('Filter reports by status')).toHaveValue('all');
+});

@@ -103,6 +103,12 @@ export async function login(page: Page, opts: { path?: string; expectedPath?: st
     await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
     await page.getByRole('button', { name: 'Sign In' }).click();
     await expect(page).toHaveURL(new RegExp(`${escapeRegExp(opts.expectedPath ?? '/dashboard')}$`));
+    // Wait for the "Logged in successfully" toast to clear. It is rendered in an
+    // overlay above the page, so while it is up it intercepts pointer events for
+    // whatever sits beneath it — which made any test that clicked near the top of
+    // the screen (Logout, most often) retry until it timed out. Waiting here is
+    // deterministic and costs a second; every caller gets it.
+    await expect(toast(page, 'Logged in successfully')).toBeHidden({ timeout: 15_000 });
 }
 
 /** Signs in, then opens `path` (full navigation, session restored from storage). */
