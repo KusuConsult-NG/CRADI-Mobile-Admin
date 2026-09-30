@@ -13,9 +13,15 @@ import { PASSWORD_RULES, validatePassword } from '@/lib/password';
  * Password recovery in the browser.
  *
  * The recovery mail carries both halves of the same reset (see
- * docs/DEPLOYMENT.md § 1a.d in the mobile repo): the 6-digit `{{ .Token }}`
- * that the mobile app asks for, and a link to this page. Supabase can deliver
- * that link in either of two shapes, so both are handled:
+ * docs/DEPLOYMENT.md § 1a.d in the mobile repo): the `{{ .Token }}` code that
+ * the mobile app asks for, and a link. A reset requested *in the app* now
+ * carries `redirectTo: cradi://reset-password`, so its link opens the app
+ * rather than this page; what still arrives here is a reset sent from the
+ * Supabase dashboard (staff), or an app user's link opened on a desktop where
+ * the custom scheme cannot resolve. Both of those are ordinary accounts, not
+ * necessarily admins — which is why this page finishes by pointing at the
+ * mobile app as well as at the admin sign-in. Supabase can deliver the link in
+ * either of two shapes, so both are handled:
  *
  *   1. `?token_hash=<hash>&type=recovery` — what `{{ .TokenHash }}` (and the
  *      PKCE form of `{{ .ConfirmationURL }}`) produces. Exchanged with
@@ -41,7 +47,7 @@ const INVALID_LINK =
     'This password reset link is invalid or has expired. Request a new reset email and open the newest one.';
 
 const NO_LINK =
-    'This page needs a password reset link. Open the most recent reset email and follow the link in it, or use the 6-digit code in the CRADI mobile app.';
+    'This page needs a password reset link. Open the most recent reset email and follow the link in it, or type the code from that email into the CRADI mobile app.';
 
 function field(error: unknown, key: 'code' | 'name' | 'message'): string | undefined {
     if (typeof error === 'object' && error !== null && key in error) {
@@ -245,8 +251,8 @@ export default function ResetPasswordPage() {
                             priority
                         />
                     </div>
-                    <h1 className="text-4xl font-bold text-white mb-3 tracking-tight">EWER Admin</h1>
-                    <p className="text-red-200 text-lg">Early Warning and Emergency Response</p>
+                    <h1 className="text-4xl font-bold text-white mb-3 tracking-tight">CRADI / EWER</h1>
+                    <p className="text-red-200 text-lg">Password reset</p>
                 </div>
 
                 <div className="glass-card rounded-2xl p-8 shadow-2xl">
@@ -267,11 +273,15 @@ export default function ResetPasswordPage() {
                                 <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
                                 <p className="text-sm text-red-200">{linkError}</p>
                             </div>
+                            <p className="mb-4 text-sm text-gray-300">
+                                App users: request a new reset from the CRADI app and type the code it emails you.
+                                Staff can sign in to the admin panel below.
+                            </p>
                             <Link
                                 href="/login"
                                 className="btn-primary w-full text-white py-3.5 px-4 rounded-lg font-semibold flex items-center justify-center gap-2 text-base"
                             >
-                                Back to Sign In
+                                Back to Admin Sign In
                             </Link>
                         </>
                     )}
@@ -289,11 +299,16 @@ export default function ResetPasswordPage() {
                                     again with your new password.
                                 </p>
                             </div>
+                            <p className="mb-4 text-sm text-gray-300">
+                                <strong className="text-white">Using the CRADI mobile app?</strong> You are done here
+                                — open the app and sign in with your new password. The sign-in button below is for
+                                staff using the admin panel.
+                            </p>
                             <Link
                                 href="/login"
                                 className="btn-primary w-full text-white py-3.5 px-4 rounded-lg font-semibold flex items-center justify-center gap-2 text-base"
                             >
-                                Go to Sign In
+                                Go to Admin Sign In
                             </Link>
                         </>
                     )}
@@ -387,7 +402,7 @@ export default function ResetPasswordPage() {
 
                             <div className="mt-6 text-center">
                                 <Link href="/login" className="text-sm text-gray-400 hover:text-gray-300">
-                                    Back to Sign In
+                                    Back to Admin Sign In
                                 </Link>
                             </div>
                         </>
