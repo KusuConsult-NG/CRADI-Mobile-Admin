@@ -41,7 +41,12 @@ test.describe('password reset (link form)', () => {
         // Nothing was written into the admin panel's own session slot.
         expect(await page.evaluate(() => window.localStorage.getItem('cradi-admin-auth'))).toBeNull();
 
-        await page.getByRole('link', { name: 'Go to Sign In' }).click();
+        // App users reach this page too (a link opened on a desktop), so the
+        // finished state has to name the app rather than send everyone to the
+        // staff portal — which is what they were landing on before.
+        await expect(page.getByText('Using the CRADI mobile app?')).toBeVisible();
+
+        await page.getByRole('link', { name: 'Go to Admin Sign In' }).click();
         await expect(page).toHaveURL(/\/login$/);
 
         // The new password works; the old one does not.
@@ -73,7 +78,7 @@ test.describe('password reset (link form)', () => {
         await page.goto('/reset-password');
         await expect(page.getByRole('heading', { name: 'Reset link problem' })).toBeVisible();
         await expect(alertBox(page)).toContainText('This page needs a password reset link');
-        await expect(page.getByRole('link', { name: 'Back to Sign In' })).toBeVisible();
+        await expect(page.getByRole('link', { name: 'Back to Admin Sign In' })).toBeVisible();
         // Public route: it is not sent to /login by the admin guard.
         await expect(page).toHaveURL(/\/reset-password$/);
     });
