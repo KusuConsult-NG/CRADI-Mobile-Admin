@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test';
 
 /**
  * End-to-end tests against a production build of the admin panel, with
- * Supabase replaced by the in-memory mock in e2e/mock-supabase.mjs.
+ * Appwrite replaced by the in-memory mock in e2e/mock-appwrite.mjs.
  *
  *   npm run test:e2e                      # builds, starts mock + app, runs tests
  *   E2E_SKIP_BUILD=1 npm run test:e2e     # reuse an existing .next build made with the same env
@@ -12,16 +12,20 @@ import { defineConfig, devices } from '@playwright/test';
  * mock URL (the CSP's connect-src is derived from it too).
  */
 const ROOT = path.resolve(__dirname, '..');
-const MOCK_PORT = Number(process.env.MOCK_SUPABASE_PORT || 54321);
+const MOCK_PORT = Number(process.env.MOCK_APPWRITE_PORT || 54321);
 const APP_PORT = Number(process.env.E2E_APP_PORT || 3100);
 const MOCK_URL = `http://127.0.0.1:${MOCK_PORT}`;
+// Appwrite's REST base. The panel's endpoint check requires the `/v1`,
+// and so does the real server.
+const MOCK_ENDPOINT = `${MOCK_URL}/v1`;
 const APP_URL = `http://127.0.0.1:${APP_PORT}`;
 
 const appEnv = {
-    NEXT_PUBLIC_SUPABASE_URL: MOCK_URL,
-    NEXT_PUBLIC_SUPABASE_ANON_KEY: 'test',
-    SUPABASE_URL: MOCK_URL,
-    SUPABASE_SERVICE_ROLE_KEY: 'test',
+    NEXT_PUBLIC_APPWRITE_ENDPOINT: MOCK_ENDPOINT,
+    NEXT_PUBLIC_APPWRITE_PROJECT_ID: 'cradi',
+    NEXT_PUBLIC_APPWRITE_DATABASE_ID: 'cradi',
+    APPWRITE_ENDPOINT: MOCK_ENDPOINT,
+    APPWRITE_API_KEY: 'test',
     NEXT_TELEMETRY_DISABLED: '1',
 };
 
@@ -59,10 +63,10 @@ export default defineConfig({
     ],
     webServer: [
         {
-            command: 'node e2e/mock-supabase.mjs',
+            command: 'node e2e/mock-appwrite.mjs',
             cwd: ROOT,
             url: `${MOCK_URL}/__mock/health`,
-            env: { MOCK_SUPABASE_PORT: String(MOCK_PORT) },
+            env: { MOCK_APPWRITE_PORT: String(MOCK_PORT) },
             reuseExistingServer: false,
             stdout: 'ignore',
             stderr: 'pipe',

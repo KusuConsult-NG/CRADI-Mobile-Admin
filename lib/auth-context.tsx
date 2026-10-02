@@ -240,14 +240,23 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
         loginInProgress.current = true;
         try {
             // A stale session makes Appwrite refuse the new one
-            // (`user_session_already_exists`), which reads as a failed
-            // password. Clearing it first is cheap and always safe here.
-            await account.deleteSession({ sessionId: 'current' }).catch(() => {});
-
-            const session = await account.createEmailPasswordSession({
-                email: email.trim(),
-                password,
-            });
+            // (`user_session_already_exists`), which would read as a failed
+            // password. Clearing it unconditionally would cost every sign-in
+            // a 401, so it is cleared only when that is what happened.
+            let session;
+            try {
+                session = await account.createEmailPasswordSession({
+                    email: email.trim(),
+                    password,
+                });
+            } catch (error) {
+                if (field(error, 'type') !== 'user_session_already_exists') throw error;
+                await account.deleteSession({ sessionId: 'current' }).catch(() => {});
+                session = await account.createEmailPasswordSession({
+                    email: email.trim(),
+                    password,
+                });
+            }
 
             let admin: AdminUser | null;
             try {
