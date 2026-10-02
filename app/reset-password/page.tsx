@@ -1,55 +1,49 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import type { SupabaseClient } from '@supabase/supabase-js';
+import { useCallback, useRef, useState } from 'react';
 import Link from 'next/link';
 import Image from 'next/image';
 import toast from 'react-hot-toast';
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { createRecoveryClient } from '@/lib/supabase';
+import { createRecoveryClient, FUNCTIONS, type Appwrite } from '@/lib/appwrite';
+import { BackendError, executeFunction } from '@/lib/function-call';
 import { PASSWORD_RULES, validatePassword } from '@/lib/password';
 
 /**
  * Password recovery in the browser.
  *
- * The recovery mail carries both halves of the same reset (see
- * docs/DEPLOYMENT.md § 1a.d in the mobile repo): the `{{ .Token }}` code that
- * the mobile app asks for, and a link. A reset requested *in the app* now
- * carries `redirectTo: cradi://reset-password`, so its link opens the app
- * rather than this page; what still arrives here is a reset sent from the
- * Supabase dashboard (staff), or an app user's link opened on a desktop where
- * the custom scheme cannot resolve. Both of those are ordinary accounts, not
- * necessarily admins — which is why this page finishes by pointing at the
- * mobile app as well as at the admin sign-in. Supabase can deliver the link in
- * either of two shapes, so both are handled:
+ * Appwrite's recovery is a **typed code**, not a link. Phase 2 of the
+ * migration kept it that way deliberately: a six-character code works in
+ * the mobile app, in this page and read aloud down a phone line, and it
+ * removes the whole class of problems the Supabase link had — two
+ * different token shapes to detect, a `redirectTo` that had to resolve a
+ * custom scheme, and a desktop browser that could not open either.
  *
- *   1. `?token_hash=<hash>&type=recovery` — what `{{ .TokenHash }}` (and the
- *      PKCE form of `{{ .ConfirmationURL }}`) produces. Exchanged with
- *      `verifyOtp({ token_hash, type: 'recovery' })`.
- *   2. `#access_token=…&refresh_token=…&type=recovery` — the implicit-flow
- *      fragment GoTrue redirects to after its own `/auth/v1/verify`. Fed to
- *      `setSession(...)`.
+ * So there is nothing to read out of the URL and nothing to scrub from
+ * the address bar. The page asks for the address, the `auth` Function
+ * mails a code, and the code plus the new password finish the reset.
  *
- * Which one arrives depends on the template and on the client flow type, and
- * the fragment form is also what a plain `{{ .ConfirmationURL }}` ends up as,
- * so the page detects whichever is present instead of assuming one.
+ * Three calls, all to the `auth` Function, because each is something a
+ * client may not be trusted to do for itself:
  *
- * The token is read from the URL here rather than by the Supabase client:
- * `lib/supabase.ts` sets `detectSessionInUrl: false` for the shared client on
- * purpose and that stays as it is. This page uses an isolated, non-persisting
- * client (`createRecoveryClient`) so the recovery session never reaches
- * localStorage or the admin guard in lib/auth-context.tsx.
+ *   1. `sendRecoveryCode` — answers the same whether or not the address
+ *      has an account, so this page cannot be used to find out which
+ *      addresses are registered.
+ *   2. `verifyRecovery` — exchanges the code for a session. The session
+ *      is good only for the password change that follows.
+ *   3. `setPassword` — reads whose password to change from the session,
+ *      never from the body.
+ *
+ * It runs on its own client (`createRecoveryClient`), so the recovery
+ * session never replaces a signed-in admin's and is never seen by the
+ * admin guard in lib/auth-context.tsx — that guard signs out any session
+ * that is not an approved admin, which would abort a legitimate reset for
+ * a non-admin staff member.
  */
 
-type Status = 'verifying' | 'ready' | 'invalid' | 'done';
+type Status = 'request' | 'code' | 'done';
 
-const INVALID_LINK =
-    'This password reset link is invalid or has expired. Request a new reset email and open the newest one.';
-
-const NO_LINK =
-    'This page needs a password reset link. Open the most recent reset email and follow the link in it, or type the code from that email into the CRADI mobile app.';
-
-function field(error: unknown, key: 'code' | 'name' | 'message'): string | undefined {
+function field(error: unknown, key: 'type' | 'name' | 'message'): string | undefined {
     if (typeof error === 'object' && error !== null && key in error) {
         const value = (error as Record<string, unknown>)[key];
         return typeof value === 'string' ? value : undefined;
@@ -58,149 +52,113 @@ function field(error: unknown, key: 'code' | 'name' | 'message'): string | undef
 }
 
 function isNetworkError(error: unknown): boolean {
-    return (
-        field(error, 'name') === 'AuthRetryableFetchError' ||
-        (error instanceof TypeError && /fetch/i.test(error.message))
-    );
+    return error instanceof TypeError && /fetch|network/i.test(error.message);
 }
 
-/** Message for a failed token exchange (verifyOtp / setSession). */
-function friendlyLinkError(error: unknown): string {
+/** Message for a failed code exchange. */
+function friendlyCodeError(error: unknown): string {
     if (isNetworkError(error)) return 'Network error. Check your connection and try again.';
-    switch (field(error, 'code')) {
-        case 'over_request_rate_limit':
-        case 'over_email_send_rate_limit':
+    const type = error instanceof BackendError ? error.type : field(error, 'type');
+    switch (type) {
+        case 'general_rate_limit_exceeded':
             return 'Too many attempts. Please wait a moment and try again.';
-        case 'user_banned':
+        case 'user_blocked':
             return 'This account has been disabled. Please contact support.';
+        case 'user_invalid_token':
+            return 'That code is invalid or has expired. Request a new one and use the newest email.';
         default:
-            return INVALID_LINK;
+            return field(error, 'message') || 'That code could not be used. Request a new one.';
     }
 }
 
-/** Message for a failed updateUser. */
+/** Message for a failed password change. */
 function friendlyUpdateError(error: unknown): string {
     if (isNetworkError(error)) return 'Network error. Check your connection and try again.';
-    const code = field(error, 'code');
-    // Supabase enforces the project's own password policy; show its wording.
-    if (code === 'weak_password') {
-        return field(error, 'message') || 'That password is too weak. Please choose a stronger one.';
-    }
-    switch (code) {
-        case 'same_password':
-            return 'Your new password must be different from your current password.';
-        case 'session_not_found':
-        case 'bad_jwt':
-            return INVALID_LINK;
-        case 'over_request_rate_limit':
+    const type = error instanceof BackendError ? error.type : field(error, 'type');
+    switch (type) {
+        case 'general_password_weak':
+        case 'password_personal_data':
+            return field(error, 'message') || 'That password is too weak. Please choose a stronger one.';
+        case 'password_recently_used':
+            return 'Your new password must be different from a password you have used before.';
+        case 'user_unauthorized':
+        case 'general_unauthorized_scope':
+            return 'That code is invalid or has expired. Request a new one.';
+        case 'general_rate_limit_exceeded':
             return 'Too many attempts. Please wait a moment and try again.';
         default:
             return field(error, 'message') || 'Could not update your password. Please try again.';
     }
 }
 
-/** Removes the recovery token from the address bar without reloading. */
-function scrubUrl() {
-    window.history.replaceState(null, '', window.location.pathname);
-}
+/** The code the Function mails: six alphanumeric characters, case-insensitive. */
+const CODE_LENGTH = 6;
 
 export default function ResetPasswordPage() {
-    const [status, setStatus] = useState<Status>('verifying');
-    const [linkError, setLinkError] = useState(NO_LINK);
+    const [status, setStatus] = useState<Status>('request');
+    const [email, setEmail] = useState('');
+    const [code, setCode] = useState('');
     const [password, setPassword] = useState('');
     const [confirm, setConfirm] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [error, setError] = useState('');
+    const [sending, setSending] = useState(false);
     const [saving, setSaving] = useState(false);
-    const client = useRef<SupabaseClient | null>(null);
-    // The token is single use: never exchange it twice (remounts, fast refresh).
-    const started = useRef(false);
+    const client = useRef<Appwrite | null>(null);
 
-    useEffect(() => {
-        if (started.current) return;
-        started.current = true;
-
-        const fail = (message: string) => {
-            setLinkError(message);
-            setStatus('invalid');
-        };
-
-        async function establishSession() {
-            const url = new URL(window.location.href);
-            const query = url.searchParams;
-            const fragment = new URLSearchParams(url.hash.replace(/^#/, ''));
-            const from = (key: string) => fragment.get(key) ?? query.get(key);
-
-            // GoTrue reports its own failures (expired link, used link) by
-            // redirecting here with error parameters instead of a token.
-            if (from('error') || from('error_code')) {
-                scrubUrl();
-                const description = from('error_description');
-                fail(description ? description.replace(/\+/g, ' ') : INVALID_LINK);
-                return;
-            }
-
-            const tokenHash = query.get('token_hash') ?? query.get('token');
-            const accessToken = fragment.get('access_token');
-            const refreshToken = fragment.get('refresh_token');
-            if (!tokenHash && !accessToken) {
-                fail(NO_LINK);
-                return;
-            }
-
-            const type = from('type');
-            if (type && type !== 'recovery') {
-                scrubUrl();
-                fail('This link is not a password reset link. Open the most recent password reset email.');
-                return;
-            }
-
-            let supabase: SupabaseClient;
-            try {
-                supabase = createRecoveryClient();
-            } catch {
-                fail('The admin panel is not configured to reach Supabase. Contact an administrator.');
-                return;
-            }
-
-            try {
-                if (tokenHash) {
-                    const { error: verifyError } = await supabase.auth.verifyOtp({
-                        token_hash: tokenHash,
-                        type: 'recovery',
-                    });
-                    if (verifyError) throw verifyError;
-                } else {
-                    if (!refreshToken) {
-                        scrubUrl();
-                        fail(INVALID_LINK);
-                        return;
-                    }
-                    const { error: sessionError } = await supabase.auth.setSession({
-                        access_token: accessToken as string,
-                        refresh_token: refreshToken,
-                    });
-                    if (sessionError) throw sessionError;
-                }
-            } catch (caught) {
-                scrubUrl();
-                fail(friendlyLinkError(caught));
-                return;
-            }
-
-            client.current = supabase;
-            scrubUrl();
-            setStatus('ready');
+    function recoveryClient(): Appwrite | null {
+        if (client.current) return client.current;
+        try {
+            client.current = createRecoveryClient();
+            return client.current;
+        } catch {
+            setError('The admin panel is not configured to reach Appwrite. Contact an administrator.');
+            return null;
         }
+    }
 
-        void establishSession();
-    }, []);
+    const requestCode = useCallback(
+        async (event: React.FormEvent) => {
+            event.preventDefault();
+            setError('');
+            const address = email.trim();
+            if (!address) {
+                setError('Enter the email address of the account.');
+                return;
+            }
+            const appwrite = recoveryClient();
+            if (!appwrite) return;
 
-    const handleSubmit = useCallback(
+            setSending(true);
+            try {
+                await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                    action: 'sendRecoveryCode',
+                    email: address,
+                });
+                // Deliberately the same message whether or not the address has
+                // an account: the Function answers identically, and saying "we sent
+                // you a code" only for real accounts would undo that.
+                toast.success('If that address has an account, a code is on its way.');
+                setStatus('code');
+            } catch (caught) {
+                setError(friendlyCodeError(caught));
+            } finally {
+                setSending(false);
+            }
+        },
+        [email],
+    );
+
+    const submitCode = useCallback(
         async (event: React.FormEvent) => {
             event.preventDefault();
             setError('');
 
+            const typed = code.trim();
+            if (typed.length !== CODE_LENGTH) {
+                setError(`Enter the ${CODE_LENGTH}-character code from the email.`);
+                return;
+            }
             const ruleError = validatePassword(password);
             if (ruleError) {
                 setError(ruleError);
@@ -210,30 +168,48 @@ export default function ResetPasswordPage() {
                 setError('Passwords do not match.');
                 return;
             }
-            const supabase = client.current;
-            if (!supabase) {
-                setLinkError(INVALID_LINK);
-                setStatus('invalid');
-                return;
-            }
+            const appwrite = recoveryClient();
+            if (!appwrite) return;
 
             setSaving(true);
             try {
-                const { error: updateError } = await supabase.auth.updateUser({ password });
-                if (updateError) throw updateError;
-                // End the recovery session everywhere, as the mobile app does,
-                // so the next sign-in uses the new password.
-                await supabase.auth.signOut({ scope: 'global' });
-                client.current = null;
+                const redeemed = await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                    action: 'verifyRecovery',
+                    email: email.trim(),
+                    code: typed,
+                });
+                const secret = redeemed.sessionSecret;
+                if (typeof secret !== 'string' || !secret) {
+                    throw new BackendError('The server did not return a session', 502);
+                }
+                appwrite.client.setSession(secret);
+
+                try {
+                    await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                        action: 'setPassword',
+                        password,
+                    });
+                } finally {
+                    // Whether or not the change succeeded: this session exists
+                    // only for it, and leaving it alive would leave a usable
+                    // session minted from a code.
+                    await appwrite.account.deleteSession({ sessionId: 'current' }).catch(() => {});
+                    client.current = null;
+                }
+
                 toast.success('Password updated successfully');
                 setStatus('done');
             } catch (caught) {
-                setError(friendlyUpdateError(caught));
+                setError(
+                    caught instanceof BackendError && caught.status === 401
+                        ? friendlyCodeError(caught)
+                        : friendlyUpdateError(caught),
+                );
             } finally {
                 setSaving(false);
             }
         },
-        [password, confirm],
+        [code, password, confirm, email],
     );
 
     return (
@@ -256,33 +232,73 @@ export default function ResetPasswordPage() {
                 </div>
 
                 <div className="glass-card rounded-2xl p-8 shadow-2xl">
-                    {status === 'verifying' && (
-                        <div className="flex flex-col items-center gap-4 py-6 text-center">
-                            <Loader2 className="w-10 h-10 animate-spin text-red-400" />
-                            <p className="text-gray-300">Checking your password reset link…</p>
-                        </div>
-                    )}
-
-                    {status === 'invalid' && (
+                    {status === 'request' && (
                         <>
-                            <h2 className="text-2xl font-semibold text-white mb-6">Reset link problem</h2>
-                            <div
-                                role="alert"
-                                className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-3"
-                            >
-                                <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
-                                <p className="text-sm text-red-200">{linkError}</p>
-                            </div>
-                            <p className="mb-4 text-sm text-gray-300">
-                                App users: request a new reset from the CRADI app and type the code it emails you.
-                                Staff can sign in to the admin panel below.
+                            <h2 className="text-2xl font-semibold text-white mb-6">Reset your password</h2>
+                            <p className="mb-6 text-sm text-gray-300">
+                                Enter the address of the account. If it has one, we will email a
+                                {' '}{CODE_LENGTH}-character code to type in on the next step.
                             </p>
-                            <Link
-                                href="/login"
-                                className="btn-primary w-full text-white py-3.5 px-4 rounded-lg font-semibold flex items-center justify-center gap-2 text-base"
-                            >
-                                Back to Admin Sign In
-                            </Link>
+
+                            {error && (
+                                <div
+                                    role="alert"
+                                    className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-lg flex items-start gap-3"
+                                >
+                                    <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                                    <p className="text-sm text-red-200">{error}</p>
+                                </div>
+                            )}
+
+                            <form onSubmit={requestCode} className="space-y-5" noValidate>
+                                <div>
+                                    <label htmlFor="email" className="block text-sm font-medium text-gray-300 mb-2">
+                                        Email Address
+                                    </label>
+                                    <input
+                                        type="email"
+                                        id="email"
+                                        value={email}
+                                        onChange={(e) => setEmail(e.target.value)}
+                                        required
+                                        autoComplete="email"
+                                        className="input-modern w-full px-4 py-3.5 rounded-lg text-white placeholder-gray-500"
+                                        placeholder="you@example.org"
+                                        disabled={sending}
+                                    />
+                                </div>
+
+                                <button
+                                    type="submit"
+                                    disabled={sending}
+                                    className="btn-primary w-full text-white py-3.5 px-4 rounded-lg font-semibold disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 text-base"
+                                >
+                                    {sending ? (
+                                        <>
+                                            <Loader2 className="w-5 h-5 animate-spin" />
+                                            Sending…
+                                        </>
+                                    ) : (
+                                        'Email me a code'
+                                    )}
+                                </button>
+                            </form>
+
+                            <div className="mt-6 flex flex-col items-center gap-2 text-center">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setError('');
+                                        setStatus('code');
+                                    }}
+                                    className="text-sm text-gray-400 hover:text-gray-300"
+                                >
+                                    I already have a code
+                                </button>
+                                <Link href="/login" className="text-sm text-gray-400 hover:text-gray-300">
+                                    Back to Admin Sign In
+                                </Link>
+                            </div>
                         </>
                     )}
 
@@ -295,8 +311,8 @@ export default function ResetPasswordPage() {
                             >
                                 <CheckCircle2 className="w-5 h-5 text-green-400 flex-shrink-0 mt-0.5" />
                                 <p className="text-sm text-green-200">
-                                    Your password has been changed and you have been signed out everywhere. Sign in
-                                    again with your new password.
+                                    Your password has been changed. Sign in again with your new
+                                    password.
                                 </p>
                             </div>
                             <p className="mb-4 text-sm text-gray-300">
@@ -313,9 +329,9 @@ export default function ResetPasswordPage() {
                         </>
                     )}
 
-                    {status === 'ready' && (
+                    {status === 'code' && (
                         <>
-                            <h2 className="text-2xl font-semibold text-white mb-6">Set a New Password</h2>
+                            <h2 className="text-2xl font-semibold text-white mb-6">Enter your code</h2>
 
                             {error && (
                                 <div
@@ -327,7 +343,31 @@ export default function ResetPasswordPage() {
                                 </div>
                             )}
 
-                            <form onSubmit={handleSubmit} className="space-y-5" noValidate>
+                            <form onSubmit={submitCode} className="space-y-5" noValidate>
+                                <div>
+                                    <label htmlFor="code" className="block text-sm font-medium text-gray-300 mb-2">
+                                        Code from the email
+                                    </label>
+                                    <input
+                                        type="text"
+                                        id="code"
+                                        value={code}
+                                        onChange={(e) => setCode(e.target.value)}
+                                        required
+                                        inputMode="text"
+                                        autoCapitalize="characters"
+                                        autoComplete="one-time-code"
+                                        spellCheck={false}
+                                        maxLength={CODE_LENGTH}
+                                        className="input-modern w-full px-4 py-3.5 rounded-lg text-white placeholder-gray-500 tracking-[0.4em] font-mono uppercase"
+                                        placeholder="A1B2C3"
+                                        disabled={saving}
+                                    />
+                                    <p className="mt-2 text-xs text-gray-400">
+                                        {CODE_LENGTH} letters and digits. Letters are not case sensitive.
+                                    </p>
+                                </div>
+
                                 <div>
                                     <label
                                         htmlFor="new-password"
@@ -400,7 +440,19 @@ export default function ResetPasswordPage() {
                                 </button>
                             </form>
 
-                            <div className="mt-6 text-center">
+                            <div className="mt-6 flex flex-col items-center gap-2 text-center">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setError('');
+                                        setCode('');
+                                        setStatus('request');
+                                    }}
+                                    className="text-sm text-gray-400 hover:text-gray-300"
+                                    disabled={saving}
+                                >
+                                    Send me a new code
+                                </button>
                                 <Link href="/login" className="text-sm text-gray-400 hover:text-gray-300">
                                     Back to Admin Sign In
                                 </Link>

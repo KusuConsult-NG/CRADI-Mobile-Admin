@@ -1,7 +1,8 @@
 'use client';
 
-import { ExecutionMethod, Query, type Models } from 'appwrite';
+import { Query, type Models } from 'appwrite';
 import { DATABASE_ID, FUNCTIONS, getAppwrite } from '@/lib/appwrite';
+import { BackendError, executeFunction } from '@/lib/function-call';
 
 /**
  * Reads go straight to the database; writes go through the `write` Function.
@@ -21,10 +22,20 @@ import { DATABASE_ID, FUNCTIONS, getAppwrite } from '@/lib/appwrite';
 
 export type Row = Models.DefaultRow;
 
-/** A row as the panel uses it: Appwrite's `$id` also surfaced as `id`. */
-export type WithId<T> = T & { id: string; $id: string; $createdAt: string; $updatedAt: string };
+/**
+ * A row as the panel uses it: the caller's own shape, plus Appwrite's
+ * system fields, plus `$id` surfaced again as `id`.
+ *
+ * `id` because that is what the panel's components and keys have always
+ * used, and renaming it across every list and dialog would be churn with
+ * no reader.
+ */
+export type WithId<T> = T & Row & { id: string };
 
-function withId<T extends Row>(row: T): WithId<T> {
+/** The caller's shape: just the columns, with no system fields to declare. */
+export type Columns = Record<string, unknown>;
+
+function withId<T>(row: Row): WithId<T> {
     return { ...row, id: row.$id } as WithId<T>;
 }
 
@@ -34,32 +45,32 @@ export interface ListResult<T> {
     total: number;
 }
 
-export async function listRows<T extends Row = Row>(
+export async function listRows<T = Columns>(
     table: string,
     queries: string[] = [],
 ): Promise<ListResult<T>> {
     const { tables } = getAppwrite();
-    const result = await tables.listRows<T>({
+    const result = await tables.listRows({
         databaseId: DATABASE_ID,
         tableId: table,
         queries,
     });
-    return { rows: result.rows.map(withId), total: result.total };
+    return { rows: result.rows.map((row) => withId<T>(row)), total: result.total };
 }
 
 /** The row, or null when it is not there — or not readable, which Appwrite answers alike. */
-export async function getRow<T extends Row = Row>(
+export async function getRow<T = Columns>(
     table: string,
     rowId: string,
 ): Promise<WithId<T> | null> {
     const { tables } = getAppwrite();
     try {
-        const row = await tables.getRow<T>({
+        const row = await tables.getRow({
             databaseId: DATABASE_ID,
             tableId: table,
             rowId,
         });
-        return withId(row);
+        return withId<T>(row);
     } catch (error) {
         if (isNotFound(error)) return null;
         throw error;
@@ -82,20 +93,20 @@ export async function countRows(table: string, queries: string[] = []): Promise<
     return result.total;
 }
 
-export async function createRow<T extends Row = Row>(
+export async function createRow<T = Columns>(
     table: string,
     rowId: string,
     data: Record<string, unknown>,
 ): Promise<WithId<T>> {
-    return withId(await write<T>('create', table, rowId, data));
+    return withId<T>(await write('create', table, rowId, data));
 }
 
-export async function updateRow<T extends Row = Row>(
+export async function updateRow<T = Columns>(
     table: string,
     rowId: string,
     data: Record<string, unknown>,
 ): Promise<WithId<T>> {
-    return withId(await write<T>('update', table, rowId, data));
+    return withId<T>(await write('update', table, rowId, data));
 }
 
 export async function deleteRow(table: string, rowId: string): Promise<void> {
@@ -107,87 +118,28 @@ export async function callOperation(
     operation: string,
     params: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-    return execute(FUNCTIONS.OPERATION, { operation, params });
+    return executeFunction(getAppwrite(), FUNCTIONS.OPERATION, { operation, params });
 }
 
-async function write<T extends Row = Row>(
+async function write(
     op: 'create' | 'update' | 'delete',
     collection: string,
     documentId: string,
     data: Record<string, unknown>,
-): Promise<T> {
-    const body = await execute(FUNCTIONS.WRITE, { op, collection, documentId, data });
+): Promise<Row> {
+    const body = await executeFunction(getAppwrite(), FUNCTIONS.WRITE, {
+        op,
+        collection,
+        documentId,
+        data,
+    });
     const document = body.document;
-    if (document && typeof document === 'object') return document as T;
-    if (op === 'delete') return {} as T;
+    if (document && typeof document === 'object') return document as Row;
+    if (op === 'delete') return {} as Row;
     // A create or update that answers with no document is a Function bug, and
     // returning an empty row would make it look like a successful write of
     // nothing.
     throw new BackendError(`The ${op} Function returned no document`, 502);
-}
-
-/**
- * Calls a Function and returns its JSON body.
- *
- * A Function that refuses a write answers with a 4xx *inside* a successful
- * execution — the execution completed, the response did not. Turning that
- * back into an error is what lets the panel treat a Function refusal and a
- * database refusal alike.
- */
-async function execute(
-    functionId: string,
-    payload: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-    const { functions } = getAppwrite();
-    const execution = await functions.createExecution({
-        functionId,
-        body: JSON.stringify(payload),
-        async: false,
-        method: ExecutionMethod.POST,
-        headers: { 'content-type': 'application/json' },
-    });
-
-    const body = decode(execution.responseBody);
-    const status = execution.responseStatusCode;
-    if (status >= 400) {
-        throw new BackendError(
-            typeof body.message === 'string' ? body.message : 'The request was refused',
-            status,
-            typeof body.type === 'string' ? body.type : undefined,
-        );
-    }
-    // An execution that never ran — a cold-start timeout, a crash — has no
-    // response at all. It must not read as success.
-    if (execution.status !== 'completed') {
-        throw new BackendError(
-            `${functionId} did not complete (${execution.status})`,
-            503,
-            'function_incomplete',
-        );
-    }
-    return body;
-}
-
-function decode(body: string): Record<string, unknown> {
-    if (!body) return {};
-    try {
-        const parsed: unknown = JSON.parse(body);
-        return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : { value: parsed };
-    } catch {
-        return { message: body };
-    }
-}
-
-/** An error carrying the status and type the panel branches on. */
-export class BackendError extends Error {
-    constructor(
-        message: string,
-        readonly status: number,
-        readonly type?: string,
-    ) {
-        super(message);
-        this.name = 'BackendError';
-    }
 }
 
 export function isNotFound(error: unknown): boolean {
@@ -199,3 +151,4 @@ export function isNotFound(error: unknown): boolean {
 }
 
 export { Query };
+export { BackendError } from '@/lib/function-call';
