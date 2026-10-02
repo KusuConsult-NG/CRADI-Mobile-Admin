@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { listRows, Query, upsertRow } from '@/lib/data';
+import { deleteRow, listRows, Query, upsertRow } from '@/lib/data';
 import { TABLES, errorMessage, toDate } from '@/lib/constants';
 import { Settings as SettingsIcon, Loader2, Save, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -117,7 +117,7 @@ interface Loaded {
     updatedAt: Record<string, Date | null>;
 }
 
-/** Converts a stored jsonb value into the form value for `def` (tolerates numbers stored as strings). */
+/** Converts a stored value into the form value for `def` (it is stored as text). */
 function toDraftValue(def: SettingDef, value: unknown): string | boolean {
     switch (def.kind) {
         case 'bool':
@@ -162,6 +162,19 @@ function parseValue(def: SettingDef, raw: string | boolean): { value: number | b
             return { value: text };
         }
     }
+}
+
+/**
+ * The string a valid setting is stored as.
+ *
+ * `app_settings.value` is a plain string column in Appwrite, where it was
+ * `jsonb` in Postgres — so the number 45 and the boolean false are stored
+ * as "45" and "false". Every reader already parses them that way (the
+ * backend's `positiveInt`, the app's `_getInt` / `_getBool`), and writing
+ * them untyped sent `Invalid document structure` instead.
+ */
+function storedString(value: number | boolean | string): string {
+    return typeof value === 'string' ? value : String(value);
 }
 
 function sameStored(def: SettingDef, a: string | boolean, b: string | boolean): boolean {
@@ -235,7 +248,11 @@ export default function SettingsPage() {
             if ('error' in result) errors[def.key] = result.error;
             const differs = !sameStored(def, draft[def.key], loaded.values[def.key]);
             if (differs) edited.push(def);
-            if (!loaded.present[def.key] || differs) changed.push(def);
+            // A row that is not there and would be stored empty is already in
+            // the state it would be saved to: `value` is required, so "no
+            // value" is the absence of the row, not an empty one.
+            const wouldBeEmpty = 'value' in result && storedString(result.value) === '';
+            if ((!loaded.present[def.key] && !wouldBeEmpty) || differs) changed.push(def);
         }
     }
     // Only keys being saved must be valid: an invalid value already stored
@@ -257,7 +274,11 @@ export default function SettingsPage() {
         const rows = changed.map((def) => {
             const result = parseValue(def, draft[def.key]);
             // Validated above.
-            return { key: def.key, value: 'value' in result ? result.value : null, updatedAt: now };
+            return {
+                key: def.key,
+                value: 'value' in result ? storedString(result.value) : '',
+                updatedAt: now,
+            };
         });
 
         setSaving(true);
@@ -271,7 +292,12 @@ export default function SettingsPage() {
             // first one instead of half-applying a batch the admin then has
             // to reconcile.
             for (const { key, value, updatedAt } of rows) {
-                await upsertRow(TABLES.APP_SETTINGS, key, { key, value, updatedAt });
+                // `value` is a required column, so a setting cleared back to
+                // nothing is removed rather than stored empty. Every reader
+                // falls back to its own default for a key that is not there,
+                // which is what an empty value meant anyway.
+                if (value === '') await deleteRow(TABLES.APP_SETTINGS, key);
+                else await upsertRow(TABLES.APP_SETTINGS, key, { key, value, updatedAt });
             }
             toast.success(`Saved ${rows.length} setting${rows.length === 1 ? '' : 's'}`);
             setReloadKey((k) => k + 1);

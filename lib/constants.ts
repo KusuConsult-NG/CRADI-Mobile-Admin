@@ -1,6 +1,8 @@
 // Shared constants and helpers (safe for both client and server code).
-// Values mirror the check constraints in the Supabase schema
-// (CRADI-mobile/supabase/migrations/20260925000000_init.sql).
+// Values mirror the schema in CRADI-mobile/infra/appwrite (columns.json for
+// the columns, plan.mjs for how they are provisioned); the enumerations
+// below were Postgres check constraints before the Appwrite migration and
+// are enforced by the `write` Function now.
 
 export const TABLES = {
     PROFILES: 'profiles',
@@ -51,7 +53,7 @@ export type AlertSeverity = (typeof ALERT_SEVERITIES)[number];
 export interface KnowledgeCategory {
     /** Shown to users and stored in `knowledge_base.category`. */
     label: string;
-    /** Stored in `knowledge_base.hazard_type`; what the mobile app filters on. */
+    /** Stored in `knowledge_base.hazardType`; what the mobile app filters on. */
     hazardType: string;
     /** Other (lower-case) spellings found in older rows. */
     aliases: readonly string[];
@@ -88,7 +90,7 @@ export function knowledgeCategoryByHazardType(hazardType: string): KnowledgeCate
 }
 
 export interface ReportHazard {
-    /** Canonical value written to `reports.hazard_type` by the mobile app. */
+    /** Canonical value written to `reports.hazardType` by the mobile app. */
     name: string;
     /** Other spellings found in older rows (matched case-insensitively for display, exactly for filtering). */
     aliases: readonly string[];
@@ -141,11 +143,19 @@ export function toDate(value: unknown): Date | null {
 }
 
 /**
- * Makes user input safe to embed in a PostgREST `or=(...)` / `ilike` filter by
- * removing characters that have syntactic meaning there.
+ * Normalises a search box's value before it becomes a query.
+ *
+ * Nothing is stripped for safety any more: an Appwrite query is JSON, so
+ * `%`, `(` and an apostrophe carry no syntax, where in a PostgREST
+ * `or=(...)` / `ilike` filter they did and had to go. Removing them is now
+ * only destructive — six LGAs and plenty of names have apostrophes, and
+ * searching "Qua'an Pan" found nothing.
+ *
+ * What is left is whitespace collapsing and a length cap, so a pasted
+ * paragraph does not become the query.
  */
 export function sanitizeSearch(value: string): string {
-    return value.replace(/[%*,()\\"']/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+    return value.replace(/\s+/g, ' ').trim().slice(0, 100);
 }
 
 export function capitalize(value: string): string {

@@ -31,6 +31,12 @@ const PROJECT = process.env.MOCK_APPWRITE_PROJECT || 'cradi';
 const DATABASE = process.env.MOCK_APPWRITE_DATABASE || 'cradi';
 const API_KEY = process.env.MOCK_APPWRITE_KEY || 'test';
 
+/** A 1x1 PNG, served for any Storage `/view`. */
+const PNG_1PX = Buffer.from(
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=',
+    'base64',
+);
+
 // Appwrite ids, not UUIDs: accounts made through the `auth` Function use
 // `unique()`, which answers with a 20-character id.
 const IDS = {
@@ -69,6 +75,8 @@ const SCHEMA = {
         columns: ['name', 'organization', 'phone', 'coverageLga', 'coverageState', 'createdAt', 'updatedAt'],
         defaults: { name: '', organization: null },
     },
+    // `value` is a plain string column, not jsonb: every value is stored
+    // as its text and parsed by the reader.
     app_settings: { columns: ['key', 'value', 'updatedAt'], defaults: {} },
     news_links: {
         columns: ['title', 'url', 'source', 'sortOrder', 'isActive', 'createdAt', 'updatedAt'],
@@ -79,15 +87,27 @@ const SCHEMA = {
 /** Appwrite's own fields, usable in queries and never in a body. */
 const SYSTEM = ['$id', '$createdAt', '$updatedAt', '$permissions', '$sequence'];
 
+/**
+ * Required columns, as `CRADI-mobile/infra/appwrite/columns.json` has them.
+ *
+ * Appwrite refuses a required attribute that is missing, null or empty, so
+ * this is where "the panel sent nothing for a column that must have a
+ * value" is caught. Listing a column here that the real schema does not
+ * require is as much of a lie as missing one: it hides a write production
+ * accepts, and it refused `news_links.source` (optional) until a test
+ * caught it.
+ */
 const REQUIRED = {
     reports: ['hazardType', 'lga'],
     alerts: ['title'],
-    // coverageState is required: an LGA name alone can mean two states, so a
-    // contact must always name its own.
-    authorities: ['phone', 'coverageLga', 'coverageState'],
+    // `coverageState` is *not* required by the column, but the `write`
+    // Function refuses a contact without it (`assertCoverage`): an LGA name
+    // alone can mean two states. The Function's rules are not re-implemented
+    // here, so a test that cares asserts the payload instead.
+    authorities: ['phone', 'coverageLga'],
     knowledge_base: ['title'],
     app_settings: ['value'],
-    news_links: ['title', 'url', 'source', 'sortOrder', 'isActive'],
+    news_links: ['title', 'url'],
 };
 
 function iso(daysAgo, minutes = 0) {
@@ -175,9 +195,9 @@ function seed() {
             stamp(randomUUID(), { name: 'Old Contact', organization: null, phone: '12345', coverageLga: 'Nowhere', coverageState: 'Benue', createdAt: iso(7), updatedAt: iso(7) }, iso(7)),
         ],
         app_settings: [
-            stamp('minimum_peer_confirmations', { key: 'minimum_peer_confirmations', value: 2, updatedAt: iso(6) }, iso(6)),
+            stamp('minimum_peer_confirmations', { key: 'minimum_peer_confirmations', value: '2', updatedAt: iso(6) }, iso(6)),
             stamp('escalation_timeout_minutes', { key: 'escalation_timeout_minutes', value: '30', updatedAt: iso(6) }, iso(6)),
-            stamp('feature_flag_peer_chat', { key: 'feature_flag_peer_chat', value: true, updatedAt: iso(6) }, iso(6)),
+            stamp('feature_flag_peer_chat', { key: 'feature_flag_peer_chat', value: 'true', updatedAt: iso(6) }, iso(6)),
             stamp('app_min_version', { key: 'app_min_version', value: '1.0.0', updatedAt: iso(6) }, iso(6)),
             stamp('support_email', { key: 'support_email', value: 'support@cradi.org', updatedAt: iso(6) }, iso(6)),
             stamp('unrelated_key', { key: 'unrelated_key', value: 'ignored', updatedAt: iso(6) }, iso(6)),
@@ -871,6 +891,25 @@ async function route(req, res, url, body) {
             state.users = state.users.filter((u) => u.$id !== target.$id);
             return send(res, 204, null);
         }
+    }
+
+    // ── storage ──────────────────────────────────────────────────────
+    // `/view` on a bucket that is `read("any")`: the panel renders report
+    // images with a plain <img>, so what matters here is that the URL the
+    // panel builds is one the server answers — a 404 would show as a broken
+    // image and (via the CSP guard) as a console error.
+    const file = path.match(/^\/storage\/buckets\/([^/]+)\/files\/([^/]+)\/(view|preview)$/);
+    if (file && method === 'GET') {
+        if (url.searchParams.get('project') !== PROJECT) {
+            throw new AppwriteError(401, 'general_unauthorized_scope', 'Missing or invalid project.');
+        }
+        res.writeHead(200, {
+            'content-type': 'image/png',
+            'content-length': PNG_1PX.length,
+            ...res.corsHeaders,
+        });
+        res.end(PNG_1PX);
+        return 200;
     }
 
     if (path === '/health' || path === '/health/version') {

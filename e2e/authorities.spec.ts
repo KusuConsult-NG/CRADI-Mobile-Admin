@@ -76,8 +76,12 @@ test.describe('authorities', () => {
             decodeURIComponent(r.query).includes('"values":["Agatu"]'),
         );
         const dupQuery = decodeURIComponent(dupCheck!.query);
-        expect(dupQuery).toContain('select=id,phone');
-        expect(dupQuery).not.toContain('phone=eq.');
+        // Only the phone is read back ($id always comes with the row), and the
+        // numbers are compared in the client after normalising — a stored
+        // "0803 123 4568" is the same contact as "+2348031234568", which an
+        // equality query on `phone` would miss.
+        expect(dupQuery).toContain('{"method":"select","values":["phone"]}');
+        expect(dupQuery).not.toContain('"attribute":"phone"');
         // Scoped to the (state, LGA), not the LGA name: there are no
         // state-less contacts to match any more.
         // Per (state, LGA): the same desk may legitimately cover Obi in

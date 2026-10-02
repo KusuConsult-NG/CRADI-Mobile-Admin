@@ -9,6 +9,19 @@ function card(page: Page, description: string) {
 
 const titles = (page: Page) => page.locator('h3');
 
+/**
+ * The Appwrite queries a logged request carried.
+ *
+ * The query string is form-encoded, so a space arrives as `+` —
+ * `decodeURIComponent` leaves those in place and would compare
+ * "Flash+Flood" against "Flash Flood". `URLSearchParams` decodes both.
+ */
+function queryValues(query: string): { method: string; attribute?: string; values: string[] }[] {
+    return [...new URLSearchParams(query)]
+        .filter(([key]) => key.startsWith('queries'))
+        .map(([, value]) => JSON.parse(value) as { method: string; attribute?: string; values: string[] });
+}
+
 function capitalize(s: string) {
     return s.charAt(0).toUpperCase() + s.slice(1);
 }
@@ -35,12 +48,15 @@ test.describe('reports', () => {
         await expect(card(page, 'River Benue overflowing')).toContainText('Obi Ward, Obi, Benue');
     });
 
-    test('shows report images from Storage paths and absolute URLs (allowed by the CSP)', async ({ page }) => {
+    test('shows report images from Storage file ids and absolute URLs (allowed by the CSP)', async ({ page }) => {
         const images = card(page, 'River Benue overflowing').locator('img');
         await expect(images).toHaveCount(2);
+        // A bare stored value is expanded to Appwrite's `/view`, which is
+        // refused without `?project=` — so the query string is part of the
+        // contract, not decoration.
         await expect(images.nth(0)).toHaveAttribute(
             'src',
-            `${MOCK_URL}/storage/v1/object/public/report-images/reports/flood-1.jpg`,
+            `${MOCK_URL}/v1/storage/buckets/report-images/files/reports%2Fflood-1.jpg/view?project=cradi`,
         );
         await expect(images.nth(1)).toHaveAttribute('src', 'https://images.example/flood-2.jpg');
         // The Storage image actually loads (a CSP block would fail the console guard too).
@@ -76,13 +92,11 @@ test.describe('reports', () => {
             for (const d of descriptions) await expect(card(page, d)).toBeVisible();
         }
         const flooding = (await mock.reads('reports')).find((r) =>
-            decodeURIComponent(r.query).includes('"attribute":"hazardType"'),
+            queryValues(r.query).some((q) => q.attribute === 'hazardType'),
         );
         // The canonical name plus every legacy spelling, so a row written
         // before the names were settled still answers the filter.
-        const hazardQuery = JSON.parse(
-            decodeURIComponent(flooding!.query).match(/\{"method":"equal","attribute":"hazardType"[^}]*\}/)![0],
-        ) as { values: string[] };
+        const hazardQuery = queryValues(flooding!.query).find((q) => q.attribute === 'hazardType')!;
         expect(hazardQuery.values).toEqual([
             'Flooding',
             'Flood',
@@ -138,7 +152,6 @@ test.describe('reports', () => {
         mock,
         consoleGuard,
     }) => {
-        consoleGuard.allow(/status of 400 .*\/rest\/v1\/rpc\/reopen_report/);
         consoleGuard.allow(/Error updating report:/);
         const row = await reportBy(mock, 'Bush burning near farms');
         await fetch(`${MOCK_URL}/__mock/table/reports/${row.$id}`, {
@@ -217,7 +230,11 @@ test.describe('reports', () => {
     });
 
     test('status filter reloads when a report leaves the filtered status', async ({ page }) => {
-        const loaded = page.waitForResponse((r) => r.url().includes('status=eq.pending'));
+        const loaded = page.waitForResponse(
+            (r) =>
+                r.url().includes('/tables/reports/rows') &&
+                decodeURIComponent(r.url()).includes('"attribute":"status"'),
+        );
         await page.getByLabel('Filter reports by status').selectOption('pending');
         await loaded;
         await expect(titles(page)).toHaveCount(8);

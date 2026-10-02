@@ -155,14 +155,14 @@ function pinnedResponse(result: 'ok' | 'not_found' | 'changed') {
 
 /**
  * Admin-only user operations. All user mutations go through this route so the
- * profile row and the Supabase Auth account stay in sync:
- *  - { approve: true, expected } → profiles.is_approved = true (+ is_verified). Refused unless the
+ * profile row and the Appwrite account stay in sync:
+ *  - { approve: true, expected } → profiles.isApproved = true (+ isVerified). Refused unless the
  *                                  Auth account's email or phone is already confirmed; this route
  *                                  never confirms an email itself (that would let anyone who signs
  *                                  up with somebody else's address take it over once approved).
- *  - { approve: false, expected } → profiles.is_approved = false (revoke approval; access is lost until
+ *  - { approve: false, expected } → profiles.isApproved = false (revoke approval; access is lost until
  *                                  approved again)
- *  - { disabled: boolean }       → profiles.is_disabled and ban / unban the Auth account (the backend
+ *  - { disabled: boolean }       → profiles.isDisabled and block / unblock the account (the backend
  *                                  also syncs the ban from the flag; both are idempotent)
  *  - { role, expected }          → profiles.role
  *  - { location, expected }      → profiles.state / lga / ward (lga must be a known LGA of state)

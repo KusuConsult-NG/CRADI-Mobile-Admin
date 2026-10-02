@@ -14,7 +14,7 @@ import { Landmark, Loader2, Plus, Search, Pencil, Trash2, AlertTriangle, Info } 
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 25;
-/** PostgREST caps every response at max-rows (1000 on Supabase): read coverage in pages of this size. */
+/** Appwrite caps a page at 5,000 rows; the coverage panel reads every contact in pages of this size. */
 const COVERAGE_PAGE_SIZE = 1000;
 const NAME_MAX = 120;
 const ORGANIZATION_MAX = 120;

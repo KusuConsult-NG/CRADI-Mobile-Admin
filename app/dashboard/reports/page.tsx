@@ -23,8 +23,18 @@ import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 20;
 
-/** Postgres error codes whose message is written for people: insufficient_privilege, invalid_parameter_value, no_data_found. */
-const SERVER_MESSAGE_CODES = new Set(['42501', '22023', 'P0002']);
+/**
+ * Refusals whose message the server wrote for a person to read: the caller
+ * is not allowed, the report is not in a state the operation accepts, or it
+ * is gone. Anything else gets the generic message, because an Appwrite
+ * internal error names internals.
+ */
+const SERVER_MESSAGE_STATUSES = new Set([400, 401, 403, 404, 409]);
+
+/** A refusal that means the card is out of date, so the list must reload. */
+function isStaleState(error: unknown): boolean {
+    return error instanceof BackendError && (error.status === 400 || error.status === 404 || error.status === 409);
+}
 
 type StatusFilter = 'all' | ReportStatus;
 
@@ -287,7 +297,7 @@ export default function ReportsPage() {
                 // otherwise the report can never be verified again.
                 await callOperation('reopen_report', { p_report_id: report.id });
             } else {
-                const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
+                const update: Record<string, unknown> = { status: newStatus, updatedBy: user.id };
                 const stampColumn = STATUS_TIMESTAMP[newStatus];
                 if (stampColumn) update[stampColumn] = new Date().toISOString();
                 if (newStatus === 'rejected') update.rejectionReason = reason || null;
@@ -321,17 +331,14 @@ export default function ReportsPage() {
             }
         } catch (error) {
             console.error('Error updating report:', error);
-            const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-            const message = error instanceof Error || (typeof error === 'object' && error && 'message' in error)
-                ? String((error as { message: unknown }).message)
-                : '';
-            // Database errors with a readable reason: permission (e.g. own
-            // report), invalid state (e.g. "Report is already pending"), not
-            // found; thrown Errors carry their own message.
-            const readable = SERVER_MESSAGE_CODES.has(code) || error instanceof Error;
+            const message = error instanceof Error ? error.message : '';
+            // A Function refusal carries a reason written for people (e.g.
+            // "That report is already pending"); a transport or server fault
+            // does not, so it gets the generic message.
+            const readable = !(error instanceof BackendError) || SERVER_MESSAGE_STATUSES.has(error.status);
             toast.error(readable && message ? message : 'Failed to update report');
-            // Invalid state means the list is out of date.
-            if (code === '22023') setReloadKey((k) => k + 1);
+            // The server refused because the row is not what this card shows.
+            if (isStaleState(error)) setReloadKey((k) => k + 1);
         } finally {
             setUpdatingId(null);
         }
@@ -511,7 +518,7 @@ export default function ReportsPage() {
                                                                 rel="noopener noreferrer"
                                                                 className="block w-20 h-20 rounded-lg overflow-hidden border border-gray-200 hover:opacity-90 transition-opacity"
                                                             >
-                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Supabase Storage URLs */}
+                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Appwrite Storage URLs */}
                                                                 <img
                                                                     src={url}
                                                                     alt={`${report.hazardType} report image ${i + 1}`}

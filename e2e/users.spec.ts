@@ -50,7 +50,7 @@ test.describe('users', () => {
         await expect(self.getByRole('button', { name: /^Change role/ })).toHaveCount(0);
     });
 
-    test('search and status filter query PostgREST', async ({ page, mock }) => {
+    test('search and status filter become Appwrite queries', async ({ page, mock }) => {
         await page.getByLabel('Filter users by status').selectOption('pending');
         await expect(page.getByRole('row')).toHaveCount(3);
         await page.getByLabel('Search users').fill('uche');
@@ -76,11 +76,26 @@ test.describe('users', () => {
         await expect(row(page, 'Ada Confirmed').getByText('Approved', { exact: true })).toBeVisible();
         const p = await profileOf(mock, IDS.pendingConfirmed);
         expect(p).toMatchObject({ isApproved: true, isVerified: true });
-        // The update was pinned to the reviewed role / lga / ward.
-        const patch = (await mock.writes({ collection: 'profiles', op: 'update' })).at(-1)!;
+        // User administration does not go through the `write` Function — it
+        // goes through /api/admin/users/[uid], which uses the API key and a
+        // bulk `updateRows` whose queries are the compare-and-set.
+        const patch = (await mock.requests({
+            method: 'PATCH',
+            path: '/tablesdb/cradi/tables/profiles/rows',
+        })).at(-1)!;
+        const pinned = ((patch.body as { queries: string[] }).queries ?? []).map(
+            (q) => JSON.parse(q) as { method: string; attribute: string; values: unknown[] },
+        );
         // The values the admin reviewed are pinned, so an edit made in
         // another tab is refused rather than silently overwritten.
-        expect(patch.expect).toMatchObject({ role: 'ewm', lga: 'Ado', ward: 'Apa' });
+        expect(pinned).toEqual(
+            expect.arrayContaining([
+                { method: 'equal', attribute: '$id', values: [IDS.pendingConfirmed] },
+                { method: 'equal', attribute: 'role', values: ['ewm'] },
+                { method: 'equal', attribute: 'lga', values: ['Ado'] },
+                { method: 'equal', attribute: 'ward', values: ['Apa'] },
+            ]),
+        );
     });
 
     test('refuses to approve a user whose email is not confirmed', async ({ page, mock, consoleGuard }) => {

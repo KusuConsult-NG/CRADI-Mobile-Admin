@@ -42,6 +42,12 @@ test.describe('authentication', () => {
         for (const next of attempts) {
             await page.goto(`/login?next=${next}`);
             await expect(page, `next=${next}`).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
+            // Let the dashboard finish loading before the next hard
+            // navigation. page.goto() tears the document down mid-request,
+            // which aborts an in-flight fetch ("Failed to fetch") before
+            // React can cancel it — an artifact of the hard nav, not
+            // something a user clicking through the app would hit.
+            await page.waitForLoadState('networkidle');
         }
 
         // A same-origin path is honoured.

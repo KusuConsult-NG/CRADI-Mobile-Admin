@@ -19,6 +19,11 @@ import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 24;
 
+// The column sizes in CRADI-mobile/infra/appwrite/columns.json: Appwrite
+// refuses a longer value outright, so the form must not offer one.
+const TITLE_MAX = 255;
+const SOURCE_MAX = 255;
+
 interface KnowledgeArticle {
     id: string;
     title: string;
@@ -429,6 +434,7 @@ export default function KnowledgePage() {
                                     id="kb-title"
                                     type="text"
                                     required
+                                    maxLength={TITLE_MAX}
                                     value={editor.form.title}
                                     onChange={(e) => updateForm('title', e.target.value)}
                                     className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
@@ -465,7 +471,8 @@ export default function KnowledgePage() {
                                         id="kb-source"
                                         type="text"
                                         value={editor.form.source}
-                                        onChange={(e) => updateForm('source', e.target.value)}
+                                        maxLength={SOURCE_MAX}
+                                    onChange={(e) => updateForm('source', e.target.value)}
                                         placeholder="e.g. NEMA, NiMet"
                                         className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
                                     />

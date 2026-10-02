@@ -11,10 +11,12 @@ import { Newspaper, Loader2, Plus, Pencil, Trash2, Info, ExternalLink } from 'lu
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 25;
-// Mirror the check constraints on public.news_links
-// (CRADI-mobile/supabase/migrations/20260927040000_builtin_content.sql).
-const TITLE_MAX = 300;
-const URL_MAX = 2000;
+// The column sizes in CRADI-mobile/infra/appwrite/columns.json. Appwrite
+// refuses anything longer with `Invalid document structure`, so a limit the
+// form allows and the server does not is a write that always fails: the
+// title was capped at 300 against a 255-character column.
+const TITLE_MAX = 255;
+const URL_MAX = 2048;
 const SOURCE_MAX = 120;
 const URL_RE = /^https?:\/\/\S+$/i;
 const INT_MIN = -2147483648;
