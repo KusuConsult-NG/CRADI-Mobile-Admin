@@ -18,16 +18,22 @@ test('dashboard shows exact counts from HEAD count requests', async ({ page, moc
         ).toHaveText(value);
     }
 
-    const heads = await mock.requests({ method: 'HEAD' });
+    // Appwrite has no HEAD count: a list reports the total for its query
+    // whatever the page size, so each card asks for one row and reads it.
+    const counts = (await mock.requests({ method: 'GET' })).filter((r) =>
+        decodeURIComponent(r.query).includes('"method":"limit","values":[1]'),
+    );
     // The stat cards issue exactly these seven; the operations panel below them
     // issues more, so assert on the cards' own queries rather than a page total.
-    expect(heads.length).toBeGreaterThanOrEqual(7);
-    for (const r of heads) expect(r.prefer).toContain('count=exact');
-    expect(heads.map((r) => `${r.path}?${decodeURIComponent(r.query)}`)).toEqual(
+    expect(counts.length).toBeGreaterThanOrEqual(7);
+    const asked = counts.map((r) => `${r.path}?${decodeURIComponent(r.query)}`);
+    const reports = '/tablesdb/cradi/tables/reports/rows';
+    const alerts = '/tablesdb/cradi/tables/alerts/rows';
+    expect(asked).toEqual(
         expect.arrayContaining([
-            '/rest/v1/reports?select=*&status=eq.pending',
-            '/rest/v1/reports?select=*&status=in.(approved,verified)',
-            '/rest/v1/alerts?select=*&is_active=eq.true',
+            `${reports}?queries[0]={"method":"equal","attribute":"status","values":["pending"]}&queries[1]={"method":"limit","values":[1]}`,
+            `${reports}?queries[0]={"method":"equal","attribute":"status","values":["approved","verified"]}&queries[1]={"method":"limit","values":[1]}`,
+            `${alerts}?queries[0]={"method":"equal","attribute":"isActive","values":[true]}&queries[1]={"method":"limit","values":[1]}`,
         ]),
     );
 });

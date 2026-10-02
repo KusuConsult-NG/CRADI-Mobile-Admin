@@ -1,6 +1,6 @@
 import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
 
-type SettingRow = { key: string; value: unknown; updated_at: string };
+type SettingRow = { $id: string; key: string; value: unknown; updatedAt: string };
 
 test.describe('app settings', () => {
     test.beforeEach(async ({ page }) => {
@@ -23,9 +23,11 @@ test.describe('app settings', () => {
         // Missing keys count as changes until saved.
         await expect(page.getByRole('button', { name: 'Save 3 changes' })).toBeEnabled();
 
-        const get = (await mock.requests({ method: 'GET', path: '/rest/v1/app_settings' }))[0];
+        const get = (await mock.reads('app_settings'))[0];
         expect(decodeURIComponent(get.query)).toBe(
-            'select=key,value,updated_at&key=in.(minimum_peer_confirmations,escalation_timeout_minutes,max_sms_per_alert_event,max_sms_per_lga_per_day,feature_flag_peer_chat,app_min_version,app_min_version_message,support_email)',
+            'queries[0]={"method":"equal","attribute":"key","values":["minimum_peer_confirmations","escalation_timeout_minutes","max_sms_per_alert_event","max_sms_per_lga_per_day","feature_flag_peer_chat","app_min_version","app_min_version_message","support_email"]}'
+                + '&queries[1]={"method":"select","values":["key","value","updatedAt"]}'
+                + '&queries[2]={"method":"limit","values":[8]}',
         );
     });
 
@@ -75,7 +77,7 @@ test.describe('app settings', () => {
         }
         await email.fill('help@cradi.org');
         await expect(save).toBeEnabled();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'app_settings' })).toHaveLength(0);
     });
 
     test('an invalid stored value that is left unchanged does not block saving other keys', async ({ page, mock }) => {
@@ -92,8 +94,9 @@ test.describe('app settings', () => {
         await page.getByLabel('Escalation timeout').fill('45');
         await page.getByRole('button', { name: 'Save 4 changes' }).click();
         await expect(toast(page, 'Saved 4 settings')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        const keys = (post.body as SettingRow[]).map((r) => r.key);
+        // One call per setting: the `write` Function takes one document at
+        // a time, and the row id is the setting key.
+        const keys = (await mock.writes({ collection: 'app_settings' })).map((w) => w.documentId);
         expect(keys).toContain('escalation_timeout_minutes');
         expect(keys).not.toContain('app_min_version');
 
@@ -117,10 +120,11 @@ test.describe('app settings', () => {
         await page.getByRole('button', { name: 'Save 7 changes' }).click();
         await expect(toast(page, 'Saved 7 settings')).toBeVisible();
 
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        expect(post.query).toContain('on_conflict=key');
-        expect(post.prefer).toContain('resolution=merge-duplicates');
-        const byKey = Object.fromEntries((post.body as SettingRow[]).map((r) => [r.key, r.value]));
+        const writes = await mock.writes({ collection: 'app_settings' });
+        // Upsert, because a setting left at its default has never been
+        // stored, so its first save is a create.
+        expect(writes.every((w) => w.op === 'upsert')).toBe(true);
+        const byKey = Object.fromEntries(writes.map((w) => [w.documentId, w.data.value]));
         expect(byKey).toStrictEqual({
             minimum_peer_confirmations: 3,
             max_sms_per_alert_event: 20,
@@ -131,7 +135,7 @@ test.describe('app settings', () => {
             support_email: 'help@cradi.org',
             // escalation_timeout_minutes is stored as "30" and unchanged: not written.
         } as Record<string, unknown>);
-        for (const r of post.body as SettingRow[]) expect(typeof r.updated_at).toBe('string');
+        for (const w of writes) expect(typeof w.data.updatedAt).toBe('string');
 
         const stored = Object.fromEntries((await mock.table<SettingRow>('app_settings')).map((r) => [r.key, r.value]));
         expect(stored).toMatchObject({
@@ -166,9 +170,11 @@ test.describe('app settings', () => {
         await page.getByLabel('Escalation timeout').fill('45');
         await page.getByRole('button', { name: 'Save 1 change' }).click();
         await expect(toast(page, 'Saved 1 setting')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        expect((post.body as SettingRow[]).map(({ key, value }) => ({ key, value }))).toEqual([
-            { key: 'escalation_timeout_minutes', value: 45 },
-        ]);
+        expect(
+            (await mock.writes({ collection: 'app_settings' })).map((w) => ({
+                key: w.documentId,
+                value: w.data.value,
+            })),
+        ).toEqual([{ key: 'escalation_timeout_minutes', value: 45 }]);
     });
 });

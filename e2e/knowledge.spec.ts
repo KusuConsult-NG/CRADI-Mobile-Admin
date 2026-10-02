@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
 import { test, expect, openAsAdmin, toast } from './fixtures';
 
-type Article = { id: string; title: string; category: string; hazard_type: string; source: string; image_url: string | null };
+type Article = { $id: string; title: string; category: string; hazardType: string; source: string; imageUrl: string | null };
 
 function articleCard(page: Page, title: string) {
     return page.locator('div.bg-white.rounded-xl').filter({ has: page.getByRole('heading', { name: title, exact: true }) });
@@ -29,14 +29,14 @@ test.describe('knowledge base', () => {
         await dialog.getByRole('button', { name: 'Create Article' }).click();
         await expect(toast(page, 'Article created')).toBeVisible();
         await expect(articleCard(page, 'Storm preparedness')).toContainText('Storm');
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/knowledge_base' })).at(-1)!;
-        expect(post.body).toEqual({
+        const post = (await mock.writes({ collection: 'knowledge_base', op: 'create' })).at(-1)!;
+        expect(post.data).toEqual({
             title: 'Storm preparedness',
             content: 'Secure loose roofing sheets.',
             source: 'NiMet',
-            image_url: null,
+            imageUrl: null,
             category: 'Storm',
-            hazard_type: 'storm',
+            hazardType: 'storm',
         });
     });
 
@@ -52,7 +52,7 @@ test.describe('knowledge base', () => {
         await dialog.getByLabel(/Image URL/).fill('');
         await dialog.getByRole('button', { name: 'Create Article' }).click();
         await expect(toast(page, 'Title and content are required.')).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/knowledge_base' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'knowledge_base', op: 'create' })).toHaveLength(0);
     });
 
     test('editing an article with a legacy category keeps its category and hazard type', async ({ page, mock }) => {
@@ -65,16 +65,16 @@ test.describe('knowledge base', () => {
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Article updated')).toBeVisible();
 
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/knowledge_base' })).at(-1)!;
-        expect(patch.body).toEqual({
+        const patch = (await mock.writes({ collection: 'knowledge_base', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({
             title: 'Legacy floods guide (revised)',
             content: 'Old article with a legacy category.',
             source: 'NiMet',
-            image_url: null,
+            imageUrl: null,
         });
         expect(await articleBy(mock, 'Legacy floods guide (revised)')).toMatchObject({
             category: 'Floods',
-            hazard_type: 'flooding',
+            hazardType: 'flooding',
         });
     });
 
@@ -87,16 +87,16 @@ test.describe('knowledge base', () => {
         await expect(dialog.getByLabel('Category').locator('option', { hasText: '(current)' })).toHaveCount(0);
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Article updated')).toBeVisible();
-        let patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/knowledge_base' })).at(-1)!;
-        expect(patch.body).toMatchObject({ category: 'Flood', hazard_type: 'flood' });
+        let patch = (await mock.writes({ collection: 'knowledge_base', op: 'update' })).at(-1)!;
+        expect(patch.data).toMatchObject({ category: 'Flood', hazardType: 'flood' });
 
         await edit();
         dialog = page.getByRole('dialog', { name: 'Edit Article' });
         await dialog.getByLabel('Category').selectOption({ label: 'Extreme Heat' });
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Article updated')).toBeVisible();
-        patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/knowledge_base' })).at(-1)!;
-        expect(patch.body).toMatchObject({ category: 'Extreme Heat', hazard_type: 'extreme_heat' });
+        patch = (await mock.writes({ collection: 'knowledge_base', op: 'update' })).at(-1)!;
+        expect(patch.data).toMatchObject({ category: 'Extreme Heat', hazardType: 'extreme_heat' });
         await expect(articleCard(page, 'Flood safety basics')).toContainText('Extreme Heat');
     });
 

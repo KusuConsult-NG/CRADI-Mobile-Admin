@@ -908,7 +908,34 @@ const server = createServer((req, res) => {
             return;
         }
         if (url.pathname.startsWith('/__mock/table/')) {
-            const table = url.pathname.slice('/__mock/table/'.length);
+            const [table, rowId] = url.pathname.slice('/__mock/table/'.length).split('/');
+            // Seeding and fixing up rows directly, without going through the
+            // API: a test that needs 1,100 contacts should not have to make
+            // 1,100 requests, and one that needs a row the product cannot
+            // create should not have to pretend it can.
+            if (req.method === 'POST') {
+                const body = await readBody(req).catch(() => undefined);
+                const incoming = Array.isArray(body) ? body : [body];
+                const now = new Date().toISOString();
+                state.rows[table] ??= [];
+                for (const row of incoming) {
+                    const { $id, ...rest } = row ?? {};
+                    state.rows[table].push(stamp($id ?? randomUUID(), { ...SCHEMA[table].defaults, ...rest }, now));
+                }
+                send(res, 201, { inserted: incoming.length });
+                return;
+            }
+            if (req.method === 'PATCH' && rowId) {
+                const body = await readBody(req).catch(() => undefined);
+                const row = (state.rows[table] ?? []).find((r) => r.$id === rowId);
+                if (!row) {
+                    send(res, 404, { message: 'no such row' });
+                    return;
+                }
+                Object.assign(row, body, { $updatedAt: new Date().toISOString() });
+                send(res, 200, row);
+                return;
+            }
             send(res, 200, state.rows[table] ?? []);
             return;
         }

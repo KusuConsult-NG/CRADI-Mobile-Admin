@@ -143,7 +143,7 @@ test('a load failure is reported in words, not left as a spinner', async ({ page
     consoleGuard.allow(/.*/);
     await login(page);
     // Make every reports query fail so the panel takes its failure path.
-    await page.route('**/rest/v1/reports**', (route) => route.abort('failed'));
+    await page.route('**/tables/reports/rows**', (route) => route.abort('failed'));
     await page.reload();
 
     const panel = page.getByRole('region', { name: 'Operations' });

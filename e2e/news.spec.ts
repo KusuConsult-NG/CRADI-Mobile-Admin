@@ -6,8 +6,8 @@ type NewsLinkRow = {
     title: string;
     url: string;
     source: string;
-    sort_order: number;
-    is_active: boolean;
+    sortOrder: number;
+    isActive: boolean;
 };
 
 function row(page: Page, title: string) {
@@ -41,8 +41,13 @@ test.describe('news links', () => {
         await expect(nimet.getByRole('button', { name: 'Hide NiMet Seasonal Climate Prediction' })).toHaveText('Active');
         await expect(row(page, 'Archived bulletin').getByRole('button', { name: 'Show Archived bulletin' })).toHaveText('Hidden');
 
-        const get = (await mock.requests({ method: 'GET', path: '/rest/v1/news_links' }))[0];
-        expect(decodeURIComponent(get.query)).toContain('order=sort_order.asc,created_at.asc,id.asc');
+        // Same order as the mobile app: sortOrder, then oldest first, with
+        // `$id` as the tiebreak that keeps the page boundary stable.
+        const get = (await mock.reads('news_links'))[0];
+        const asked = decodeURIComponent(get.query);
+        expect(asked).toContain('{"method":"orderAsc","attribute":"sortOrder"}');
+        expect(asked).toContain('{"method":"orderAsc","attribute":"$createdAt"}');
+        expect(asked).toContain('{"method":"orderAsc","attribute":"$id"}');
     });
 
     test('creates a link at the end of the list when no sort order is given', async ({ page, mock }) => {
@@ -57,13 +62,13 @@ test.describe('news links', () => {
         await expect(dialog).toBeHidden();
         await expect(page.getByText('Showing 1–6 of 6 links')).toBeVisible();
         await expect(row(page, 'NEMA flood outlook')).toContainText('60');
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/news_links' })).at(-1)!;
-        expect(post.body).toEqual({
+        const post = (await mock.writes({ collection: 'news_links', op: 'create' })).at(-1)!;
+        expect(post.data).toEqual({
             title: 'NEMA flood outlook',
             url: 'https://nema.gov.ng/outlook',
             source: 'NEMA',
-            sort_order: 60,
-            is_active: true,
+            sortOrder: 60,
+            isActive: true,
         });
     });
 
@@ -92,7 +97,7 @@ test.describe('news links', () => {
         await expect(toast(page, 'Sort order must be a whole number.')).toBeVisible();
 
         await expect(dialog).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/news_links' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'news_links', op: 'create' })).toHaveLength(0);
     });
 
     test('edits a link, including its sort order and active flag', async ({ page, mock }) => {
@@ -112,14 +117,14 @@ test.describe('news links', () => {
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Link updated')).toBeVisible();
 
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/news_links' })).at(-1)!;
-        expect(decodeURIComponent(patch.query)).toContain('id=eq.4c7598b5-dc7f-561b-9afe-6f12cc62fb6c');
-        expect(patch.body).toEqual({
+        const patch = (await mock.writes({ collection: 'news_links', op: 'update' })).at(-1)!;
+        expect(patch.documentId).toBe('news0000000000000004');
+        expect(patch.data).toEqual({
             title: 'Early Warning Systems explained',
             url: 'https://www.undrr.org/terminology/early-warning-system',
             source: 'UNDRR',
-            sort_order: 5,
-            is_active: true,
+            sortOrder: 5,
+            isActive: true,
         });
         // Now first in the list.
         await expect(page.locator('tbody tr').first()).toContainText('Early Warning Systems explained');
@@ -137,16 +142,16 @@ test.describe('news links', () => {
         await row(page, title).getByRole('button', { name: `Hide ${title}` }).click();
         await expect(toast(page, 'Link hidden from the app')).toBeVisible();
         await expect(row(page, title).getByRole('button', { name: `Show ${title}` })).toHaveText('Hidden');
-        expect(await linkBy(mock, title)).toMatchObject({ is_active: false });
-        let patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/news_links' })).at(-1)!;
-        expect(patch.body).toEqual({ is_active: false });
+        expect(await linkBy(mock, title)).toMatchObject({ isActive: false });
+        let patch = (await mock.writes({ collection: 'news_links', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({ isActive: false });
 
         await row(page, title).getByRole('button', { name: `Show ${title}` }).click();
         await expect(toast(page, 'Link shown in the app')).toBeVisible();
         await expect(row(page, title).getByRole('button', { name: `Hide ${title}` })).toHaveText('Active');
-        expect(await linkBy(mock, title)).toMatchObject({ is_active: true });
-        patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/news_links' })).at(-1)!;
-        expect(patch.body).toEqual({ is_active: true });
+        expect(await linkBy(mock, title)).toMatchObject({ isActive: true });
+        patch = (await mock.writes({ collection: 'news_links', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({ isActive: true });
     });
 
     test('deletes a link after confirmation', async ({ page, mock }) => {
