@@ -96,6 +96,13 @@ test.describe('users', () => {
                 { method: 'equal', attribute: 'ward', values: ['Apa'] },
             ]),
         );
+        // The account's labels come with the approval. Without them the
+        // row says approved and every `read("label:…")` still refuses —
+        // which Appwrite reports as 200 and zero rows, so the user sees an
+        // empty page and no error. Enforcement is not mocked; that it is
+        // enforced is `live.spec.ts`.
+        const labels = (await mock.requests({ method: 'PUT', path: `/users/${IDS.pendingConfirmed}/labels` })).at(-1);
+        expect((labels?.body as { labels: string[] })?.labels).toEqual(['ewm', 'approved']);
     });
 
     test('refuses to approve a user whose email is not confirmed', async ({ page, mock, consoleGuard }) => {

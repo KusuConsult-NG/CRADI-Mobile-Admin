@@ -132,6 +132,7 @@ railway.json                        # Railway build/deploy config
 - `npm run lint` – ESLint; `npm run typecheck` – TypeScript
 - `npm run set:admin -- <email>` – promote an existing user to admin
 - `npm run test:e2e` – Playwright end-to-end tests against a mocked Appwrite (below)
+- `npm run test:e2e:live` – the same browser, against a **real** Appwrite (below)
 
 ## End-to-end tests
 
@@ -167,6 +168,55 @@ npm run test:e2e -- users.spec.ts      # one file
   `E2E_APP_PORT` change the ports.
 - Every test fails on unexpected console errors, uncaught exceptions or CSP
   violations. Failure screenshots and traces go to `test-results/` (git-ignored).
+
+## Against a real Appwrite
+
+The mock answers the *shape* of Appwrite. It deliberately implements
+neither document permissions nor the `write` Function's authorisation,
+so everything that lives in that gap is unverified until something
+drives the real server. `e2e/live.spec.ts` does, in the same browser:
+
+```bash
+# in the CRADI-mobile checkout, bring a real Appwrite up first:
+#   ./infra/appwrite/local/up.sh && node infra/appwrite/local/bootstrap.mjs
+#   source infra/appwrite/local/.env.local
+#   node infra/appwrite/provision.mjs && node infra/appwrite/local/deploy.mjs
+source ../CRADI-mobile/infra/appwrite/local/.env.local
+npm run test:e2e:live:seed          # creates this run's admin, users and reports
+NEXT_PUBLIC_APPWRITE_ENDPOINT=$APPWRITE_ENDPOINT NEXT_PUBLIC_APPWRITE_PROJECT_ID=$APPWRITE_PROJECT_ID npm run build && npm start -- -p 3100 &
+npm run test:e2e:live
+```
+
+It signs in through the form and then checks the server, with the API
+key, for what the panel actually wrote: the `write` Function's stamps
+and refusals, the optimistic lock, the `operation` Function, the string
+`app_settings.value`, and the account labels an approval has to carry.
+The seeder only adds rows — pointed at a real server, a seeder that
+clears tables is one typo from clearing the wrong ones.
+
+The project needs a **web platform** registered for the panel's hostname
+(`localhost` locally, the real domain in production), or Appwrite refuses
+every request from the browser as an unknown origin.
+
+### How the session is held
+
+Appwrite and the panel are different sites — `appwrite.local` and
+`localhost` here, Cloud and the panel's domain in production — so the
+session cookie is third-party and the browser drops it. The Web SDK
+falls back to `localStorage.cookieFallback` and an `X-Fallback-Cookies`
+header, and that is what carries every authenticated call. Measured:
+after signing in, the browser holds **no cookies at all**.
+
+Two consequences worth knowing before launch:
+
+- The session is readable by any script on the panel's origin, where an
+  HttpOnly cookie would not be. That is why `lib/csp.ts` allows no
+  inline script and no `unsafe-eval` in production — the CSP is the
+  thing standing between an injected script and an admin session.
+- Serving Appwrite from the same site as the panel (a custom domain such
+  as `api.example.org` beside `admin.example.org`) would make the cookie
+  first-party again, and HttpOnly. Worth doing if the domain is
+  available.
 
 ## Related Projects
 

@@ -9,7 +9,9 @@
     "lint": "eslint .",
     "set:admin": "node scripts/set-admin.mjs",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test -c e2e/playwright.config.ts"
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "test:e2e:live": "playwright test -c e2e/live.config.ts",
+    "test:e2e:live:seed": "node e2e/live-seed.mjs"
   },
   "dependencies": {
     "appwrite": "^28.1.0",

@@ -571,7 +571,7 @@ function publicUser(user) {
         status: user.status,
         emailVerification: user.emailVerification,
         phoneVerification: user.phoneVerification,
-        labels: [],
+        labels: user.labels ?? [],
         prefs: {},
     };
 }
@@ -875,6 +875,23 @@ async function route(req, res, url, body) {
     }
 
     // ── users (server, API key) ──────────────────────────────────────
+    const labels = path.match(/^\/users\/([^/]+)\/labels$/);
+    if (labels && method === 'PUT') {
+        if (!isServer(req)) {
+            throw new AppwriteError(401, 'general_unauthorized_scope', 'app.current (role: applications) missing scope (users.write)');
+        }
+        const target = userById(decodeURIComponent(labels[1]));
+        if (!target) throw new AppwriteError(404, 'user_not_found', 'User with the requested ID could not be found.');
+        // Labels are the subject of every `read("label:…")` permission, so
+        // what the panel sets here decides what that account can read.
+        // Permissions are not enforced in this mock — they are enforced,
+        // and tested, against a real Appwrite in `live.spec.ts` — but the
+        // call has to exist, or the route that makes it looks like it
+        // failed.
+        target.labels = Array.isArray(body?.labels) ? body.labels : [];
+        return send(res, 200, publicUser(target));
+    }
+
     const user = path.match(/^\/users\/([^/]+)(\/status)?$/);
     if (user) {
         if (!isServer(req)) {

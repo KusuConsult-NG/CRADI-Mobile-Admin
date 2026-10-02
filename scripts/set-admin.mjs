@@ -2,9 +2,15 @@
 /**
  * Promote an existing Appwrite user to an approved admin.
  *
- * Updates their `profiles` row: role = 'admin', isApproved = true,
- * isDisabled = false. Uses an API key (bypasses every permission) — run it
- * locally or in a trusted shell only.
+ * Updates their `profiles` row (role = 'admin', isApproved = true,
+ * isDisabled = false) **and the account's labels**, which is what the
+ * `read("label:admin")` permissions on `profiles` and `reports` actually
+ * check. Without the label the panel signs in and shows nothing: Appwrite
+ * answers a read you have no permission for with `200 {"total": 0}`, not
+ * with an error.
+ *
+ * Uses an API key (bypasses every permission) — run it locally or in a
+ * trusted shell only.
  *
  * Env:
  *   APPWRITE_ENDPOINT (or NEXT_PUBLIC_APPWRITE_ENDPOINT)
@@ -97,6 +103,18 @@ async function main() {
             throw new Error(`User ${userId} has no profile row (was the schema provisioned before sign-up?).`);
         }
         throw new Error(`Profile update failed: ${error?.message ?? error}`);
+    }
+
+    // The row alone grants nothing. This is the half that does, and it is
+    // not optional — a profile that says admin with no label on the account
+    // is an admin who can read neither users nor reports.
+    try {
+        await users.updateLabels({ userId, labels: ['admin', 'approved'] });
+    } catch (error) {
+        throw new Error(
+            `The profile now says admin, but the account's labels were not set (${error?.message ?? error}). ` +
+                'Without them this account reads no users and no reports. Run this again.',
+        );
     }
 
     // Make sure a previously blocked account can sign in again.

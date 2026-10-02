@@ -316,8 +316,19 @@ export default function UsersPage() {
     }, [confirmBusy, confirmModal.onConfirm]);
 
     const userApi = useCallback(
-        (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }): Promise<unknown> =>
-            adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init),
+        async (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }): Promise<unknown> => {
+            const result = await adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init);
+            // The change landed, but something after it did not — today
+            // that is the account's labels, which decide what the user can
+            // read. Shown here rather than at every call site, and not as
+            // a failure, because the row did move.
+            const warning =
+                typeof result === 'object' && result !== null && 'warning' in result
+                    ? (result as { warning: unknown }).warning
+                    : null;
+            if (typeof warning === 'string' && warning) toast.error(warning, { duration: 8000 });
+            return result;
+        },
         [getAccessToken],
     );
 

@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { Query } from 'node-appwrite';
 import { type AdminClients, DATABASE_ID, jsonError, requireAdmin } from '@/lib/appwrite-server';
 import { isUserRole, TABLES, type UserRole } from '@/lib/constants';
-import { isAuthUserConfirmed, isNotFound, USER_ID_RE } from '@/lib/admin-users';
+import { accountLabels, isAuthUserConfirmed, isNotFound, LABEL_FIELDS, USER_ID_RE } from '@/lib/admin-users';
 import { isLga } from '@/lib/lgas';
 import { isLgaInState } from '@/lib/wards';
 
@@ -145,12 +145,63 @@ async function setDisabledFlag(admin: AdminClients, uid: string, disabled: boole
     }
 }
 
+/**
+ * Puts the account's labels back in step with the profile row.
+ *
+ * This route writes `profiles` with the API key, which bypasses the
+ * `write` Function and therefore its own label sync. Without this, every
+ * approval and role change made in the panel updated the row and left the
+ * account unable to read what the new role grants — and Appwrite reports
+ * that as `200 {"total": 0}`, so the user saw an empty panel rather than
+ * an error. Measured against a live 1.9.6: an admin whose account had no
+ * `admin` label read 0 of 9 profiles and 0 of 15 reports.
+ *
+ * Never fatal: the row is already written, and answering with a failure
+ * would describe a change that happened as one that did not. It is logged
+ * and reported in the response instead, so the panel can say so.
+ */
+async function syncAccountLabels(
+    admin: AdminClients,
+    uid: string,
+    update: Record<string, unknown>,
+): Promise<boolean> {
+    if (!LABEL_FIELDS.some((field) => field in update)) return true;
+    try {
+        const row = await admin.tables.getRow({
+            databaseId: DATABASE_ID(),
+            tableId: TABLES.PROFILES,
+            rowId: uid,
+        });
+        await admin.users.updateLabels({ userId: uid, labels: accountLabels(row as Record<string, unknown>) });
+        return true;
+    } catch (error) {
+        console.error('[api/admin/users] labels not synced for', uid, error);
+        return false;
+    }
+}
+
+const LABELS_MESSAGE =
+    'Saved, but this account\'s permissions could not be updated — they may see an empty page until it is retried.';
+
 const CHANGED_MESSAGE = 'User details changed since you loaded them — reload and review again.';
 
-function pinnedResponse(result: 'ok' | 'not_found' | 'changed') {
+function pinnedResponse(result: 'ok' | 'not_found' | 'changed', labelsSynced = true) {
     if (result === 'not_found') return jsonError('User not found', 404);
     if (result === 'changed') return jsonError(CHANGED_MESSAGE, 409);
+    if (!labelsSynced) return NextResponse.json({ success: true, warning: LABELS_MESSAGE });
     return NextResponse.json({ success: true });
+}
+
+/** Applies the pinned update, then brings the account's labels with it. */
+async function pinnedProfileWrite(
+    admin: AdminClients,
+    uid: string,
+    update: Record<string, unknown>,
+    expected: Expected,
+) {
+    const result = await pinnedProfileUpdate(admin, uid, update, expected);
+    if (result !== 'ok') return pinnedResponse(result);
+    return pinnedResponse(result, await syncAccountLabels(admin, uid, update));
 }
 
 /**
@@ -195,7 +246,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
 
     try {
         if ('approve' in body && !body.approve) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { isApproved: false }, body.expected));
+            return pinnedProfileWrite(admin, uid, { isApproved: false }, body.expected);
         }
 
         if ('approve' in body) {
@@ -218,17 +269,15 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
                     409,
                 );
             }
-            return pinnedResponse(
-                await pinnedProfileUpdate(admin, uid, { isApproved: true, isVerified: true }, body.expected),
-            );
+            return pinnedProfileWrite(admin, uid, { isApproved: true, isVerified: true }, body.expected);
         }
 
         if ('role' in body) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { role: body.role }, body.expected));
+            return pinnedProfileWrite(admin, uid, { role: body.role }, body.expected);
         }
 
         if ('location' in body) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { ...body.location }, body.expected));
+            return pinnedProfileWrite(admin, uid, { ...body.location }, body.expected);
         }
 
         if (body.disabled) {
@@ -251,7 +300,11 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
                 console.error('[api/admin/users] block failed:', error);
                 return jsonError('Could not block the sign-in account; the user was not blocked.', 502);
             }
-            return NextResponse.json({ success: true });
+            // A blocked account keeps no labels: the block can be lifted in
+            // the Appwrite console without touching the profile, and a
+            // leftover label would come back with it.
+            const synced = await syncAccountLabels(admin, uid, { isDisabled: true });
+            return NextResponse.json(synced ? { success: true } : { success: true, warning: LABELS_MESSAGE });
         }
 
         // Unblock: let them sign in again first, then clear the profile flag.
@@ -274,7 +327,8 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
             }
             return jsonError('Could not update the profile; the user is still blocked.', 500);
         }
-        return NextResponse.json({ success: true });
+        const synced = await syncAccountLabels(admin, uid, { isDisabled: false });
+        return NextResponse.json(synced ? { success: true } : { success: true, warning: LABELS_MESSAGE });
     } catch (error) {
         console.error('[api/admin/users] PATCH failed:', error);
         return jsonError('Failed to update user', 500);

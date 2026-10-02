@@ -34,6 +34,10 @@ const start = `npx next start -p ${APP_PORT} -H 127.0.0.1`;
 export default defineConfig({
     testDir: __dirname,
     testMatch: /.*\.spec\.ts$/,
+    // `live.spec.ts` drives a real Appwrite and has its own config; it
+    // needs a seeded project and an API key, so collecting it here fails
+    // the whole run before a single mocked test starts.
+    testIgnore: /live\.spec\.ts$/,
     // One shared in-memory mock: run serially and reset it before each test.
     fullyParallel: false,
     workers: 1,
