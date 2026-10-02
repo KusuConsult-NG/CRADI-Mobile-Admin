@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { jsonError, requireAdmin } from '@/lib/supabase-admin';
-import { isAuthUserConfirmed, isNotFound, UUID_RE } from '@/lib/admin-users';
+import { jsonError, requireAdmin } from '@/lib/appwrite-server';
+import { isAuthUserConfirmed, isNotFound, USER_ID_RE } from '@/lib/admin-users';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +21,7 @@ export async function POST(req: NextRequest) {
     try {
         const body: unknown = await req.json();
         const raw = typeof body === 'object' && body !== null ? (body as { ids?: unknown }).ids : null;
-        if (Array.isArray(raw) && raw.length <= MAX_IDS && raw.every((id) => typeof id === 'string' && UUID_RE.test(id))) {
+        if (Array.isArray(raw) && raw.length <= MAX_IDS && raw.every((id) => typeof id === 'string' && USER_ID_RE.test(id))) {
             ids = [...new Set(raw as string[])];
         }
     } catch {
@@ -31,12 +31,14 @@ export async function POST(req: NextRequest) {
 
     const entries = await Promise.all(
         ids.map(async (id): Promise<[string, boolean | null]> => {
-            const { data, error } = await admin.auth.admin.getUserById(id);
-            if (error) {
-                if (!isNotFound(error)) console.error('[api/admin/users/confirmation] lookup failed:', error.message);
+            try {
+                return [id, isAuthUserConfirmed(await admin.users.get({ userId: id }))];
+            } catch (error) {
+                if (!isNotFound(error)) {
+                    console.error('[api/admin/users/confirmation] lookup failed:', error);
+                }
                 return [id, null];
             }
-            return [id, isAuthUserConfirmed(data.user)];
         }),
     );
 
