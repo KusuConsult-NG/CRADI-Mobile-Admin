@@ -101,12 +101,23 @@ export async function createRow<T = Columns>(
     return withId<T>(await write('create', table, rowId, data));
 }
 
+/**
+ * [expect] is an optimistic lock: the edit applies only while those
+ * fields still hold those values, and the Function answers 409 when they
+ * do not.
+ *
+ * Appwrite has no `WHERE` on a single-row update, so the Function does
+ * it with `updateRows` and a query — one atomic call, rather than a read
+ * followed by a hopeful write. An admin deciding a report from a card
+ * that may be minutes old must not overwrite somebody else's decision.
+ */
 export async function updateRow<T = Columns>(
     table: string,
     rowId: string,
     data: Record<string, unknown>,
+    options: { expect?: Record<string, unknown> } = {},
 ): Promise<WithId<T>> {
-    return withId<T>(await write('update', table, rowId, data));
+    return withId<T>(await write('update', table, rowId, data, options.expect));
 }
 
 /**
@@ -141,12 +152,14 @@ async function write(
     collection: string,
     documentId: string,
     data: Record<string, unknown>,
+    expect?: Record<string, unknown>,
 ): Promise<Row> {
     const body = await executeFunction(getAppwrite(), FUNCTIONS.WRITE, {
         op,
         collection,
         documentId,
         data,
+        ...(expect ? { expect } : {}),
     });
     const document = body.document;
     if (document && typeof document === 'object') return document as Row;

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { createRow, listRows, Query, updateRow } from '@/lib/data';
+import { ID } from 'appwrite';
 import { TABLES, ALERT_SEVERITIES, capitalize, toDate, type AlertSeverity } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
 import Modal from '@/components/Modal';
@@ -31,10 +32,10 @@ interface AlertRow {
     title: string | null;
     message: string | null;
     severity: string | null;
-    target_lga: string | null;
-    target_state: string | null;
-    is_active: boolean | null;
-    created_at: string | null;
+    targetLga: string | null;
+    targetState: string | null;
+    isActive: boolean | null;
+    createdAt: string | null;
 }
 
 interface AlertForm {
@@ -50,15 +51,15 @@ interface AlertForm {
 const EMPTY_FORM: AlertForm = { title: '', message: '', severity: 'info', targetState: '', targetLga: 'All' };
 
 /**
- * The (target_state, target_lga) to store for a form, or an error. Only
+ * The (targetState, targetLga) to store for a form, or an error. Only
  * values from the location list are accepted: a typo would reach no one, and
  * LGA names repeat across states (Obi is in Benue and in Nasarawa).
  *
- * An LGA without a state is not a thing an alert can be: the database rejects
- * it (check alerts_target_lga_needs_state, migration 20260927080000), and this
- * form never offers it — the LGA picker is disabled until a state is chosen
- * and resets to 'All' whenever the state changes. The check below is the last
- * line of that same rule.
+ * An LGA without a state is not a thing an alert can be: the server rejects
+ * it (`assertTarget` in the `write` Function, which carries over the Postgres
+ * check `alerts_target_lga_needs_state`), and this form never offers it — the
+ * LGA picker is disabled until a state is chosen and resets to 'All' whenever
+ * the state changes. The check below is the last line of that same rule.
  */
 function alertTarget(form: AlertForm): { state: string | null; lga: string } | { error: string } {
     const state = form.targetState;
@@ -97,10 +98,10 @@ function toAlert(row: AlertRow): Alert {
         title: row.title?.trim() || 'Untitled alert',
         message: row.message ?? '',
         severity: row.severity ?? 'info',
-        targetLga: row.target_lga?.trim() || 'All',
-        targetState: row.target_state?.trim() ?? '',
-        isActive: row.is_active === true,
-        createdAt: toDate(row.created_at),
+        targetLga: row.targetLga?.trim() || 'All',
+        targetState: row.targetState?.trim() ?? '',
+        isActive: row.isActive === true,
+        createdAt: toDate(row.createdAt),
     };
 }
 
@@ -125,31 +126,36 @@ export default function AlertsPage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            let query = getSupabase()
-                .from(TABLES.ALERTS)
-                .select('id, title, message, severity, target_lga, target_state, is_active, created_at', { count: 'exact' })
-                .order('created_at', { ascending: false })
-                .order('id', { ascending: false })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-            if (filter !== 'all') query = query.eq('is_active', filter === 'active');
-            const { data, count, error } = await query;
-            if (cancelled) return;
-            if (error) {
+            const queries = [
+                Query.orderDesc('$createdAt'),
+                Query.orderDesc('$id'),
+                Query.limit(PAGE_SIZE),
+                Query.offset(page * PAGE_SIZE),
+                Query.select(['title', 'message', 'severity', 'targetLga', 'targetState', 'isActive', 'createdAt']),
+            ];
+            if (filter !== 'all') queries.push(Query.equal('isActive', filter === 'active'));
+            let rows: AlertRow[];
+            let total: number;
+            try {
+                ({ rows, total } = await listRows<AlertRow>(TABLES.ALERTS, queries));
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching alerts:', error);
                 toast.error('Failed to load alerts.');
                 setAlerts([]);
                 setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as AlertRow[];
-                if (rows.length === 0 && page > 0) {
-                    // Past the last page (rows changed elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
-                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
-                    return;
-                }
-                setAlerts(rows.map(toAlert));
-                setTotalCount(count ?? null);
+                setLoading(false);
+                return;
             }
+            if (cancelled) return;
+            if (rows.length === 0 && page > 0) {
+                // Past the last page (rows changed elsewhere): step back.
+                const lastPage = total ? Math.ceil(total / PAGE_SIZE) - 1 : page - 1;
+                setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                return;
+            }
+            setAlerts(rows.map(toAlert));
+            setTotalCount(total);
             setLoading(false);
         }
         void load();
@@ -180,21 +186,21 @@ export default function AlertsPage() {
 
         setSaving(true);
         try {
-            // Inserting an active alert queues a push broadcast (processed by the backend).
-            const { data, error } = await getSupabase()
-                .from(TABLES.ALERTS)
-                .insert({
-                    title,
-                    message,
-                    severity: form.severity,
-                    target_lga: target.lga,
-                    target_state: target.state,
-                    is_active: true,
-                    created_by: user.id,
-                })
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Not permitted');
+            // Creating an active alert queues a push broadcast (the
+            // `on-write` Function writes the outbox document).
+            //
+            // No `createdBy`: the `write` Function stamps it from the
+            // caller's session and strips whatever the client sends, so
+            // passing it would be a value that cannot be trusted and is
+            // not used.
+            await createRow(TABLES.ALERTS, ID.unique(), {
+                title,
+                message,
+                severity: form.severity,
+                targetLga: target.lga,
+                targetState: target.state,
+                isActive: true,
+            });
             toast.success('Alert published');
             setForm(null);
             if (filter === 'inactive') {
@@ -217,13 +223,7 @@ export default function AlertsPage() {
         setDeactivateTarget(null);
         setUpdatingId(target.id);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.ALERTS)
-                .update({ is_active: false })
-                .eq('id', target.id)
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Alert not found or not permitted');
+            await updateRow(TABLES.ALERTS, target.id, { isActive: false });
             toast.success('Alert deactivated');
             if (filter === 'active') {
                 if (alerts.length === 1 && page > 0) setPage((p) => p - 1);

@@ -2,7 +2,8 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { createRow, deleteRow, listRows, Query, updateRow } from '@/lib/data';
+import { ID } from 'appwrite';
 import { TABLES, errorMessage, sanitizeSearch, toDate } from '@/lib/constants';
 import { isLga } from '@/lib/lgas';
 import { LOCATIONS, STATES, isLgaInState, lgasForState } from '@/lib/wards';
@@ -25,8 +26,8 @@ interface Authority {
     phone: string;
     coverageLga: string;
     /**
-     * Always set: since migration 20260927090000 authorities.coverage_state is
-     * NOT NULL and (coverage_state, coverage_lga) is a foreign key into
+     * Always set: since migration 20260927090000 authorities.coverageState is
+     * NOT NULL and (coverageState, coverageLga) is a foreign key into
      * public.nigeria_lgas, so the database cannot hold a contact that covers
      * an LGA name in every state. '' only if a row somehow arrives malformed,
      * and then the row is flagged and must be re-pointed before it can be saved.
@@ -40,9 +41,9 @@ interface AuthorityRow {
     name: string | null;
     organization: string | null;
     phone: string | null;
-    coverage_lga: string | null;
-    coverage_state: string | null;
-    updated_at: string | null;
+    coverageLga: string | null;
+    coverageState: string | null;
+    updatedAt: string | null;
 }
 
 interface AuthorityForm {
@@ -115,9 +116,9 @@ function toAuthority(row: AuthorityRow): Authority {
         name: row.name?.trim() ?? '',
         organization: row.organization?.trim() ?? '',
         phone: row.phone?.trim() ?? '',
-        coverageLga: row.coverage_lga ?? '',
-        coverageState: row.coverage_state?.trim() ?? '',
-        updatedAt: toDate(row.updated_at),
+        coverageLga: row.coverageLga ?? '',
+        coverageState: row.coverageState?.trim() ?? '',
+        updatedAt: toDate(row.updatedAt),
     };
 }
 
@@ -158,44 +159,53 @@ export default function AuthoritiesPage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            let query = getSupabase()
-                .from(TABLES.AUTHORITIES)
-                .select('id, name, organization, phone, coverage_lga, coverage_state, updated_at', { count: 'exact' })
-                .order('coverage_lga', { ascending: true })
-                .order('coverage_state', { ascending: true })
-                .order('name', { ascending: true })
-                .order('id', { ascending: true })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            const queries = [
+                Query.orderAsc('coverageLga'),
+                Query.orderAsc('coverageState'),
+                Query.orderAsc('name'),
+                Query.orderAsc('$id'),
+                Query.limit(PAGE_SIZE),
+                Query.offset(page * PAGE_SIZE),
+                Query.select(['name', 'organization', 'phone', 'coverageLga', 'coverageState', 'updatedAt']),
+            ];
             if (lgaFilter !== 'all') {
                 // Everyone texted for that (state, LGA) — which is everyone
                 // listed for it: a contact covers one state's LGA and no other.
                 const { state, lga } = parseLgaKey(lgaFilter);
-                query = query.eq('coverage_lga', lga).eq('coverage_state', state);
+                queries.push(Query.equal('coverageLga', lga), Query.equal('coverageState', state));
             }
             if (searchQuery) {
-                const p = `*${searchQuery}*`;
-                query = query.or(
-                    `name.ilike.${p},organization.ilike.${p},coverage_lga.ilike.${p},coverage_state.ilike.${p},phone.ilike.${p}`,
+                queries.push(
+                    Query.or([
+                        Query.contains('name', searchQuery),
+                        Query.contains('organization', searchQuery),
+                        Query.contains('coverageLga', searchQuery),
+                        Query.contains('coverageState', searchQuery),
+                        Query.contains('phone', searchQuery),
+                    ]),
                 );
             }
-            const { data, count, error } = await query;
-            if (cancelled) return;
-            if (error) {
+            let loaded: { rows: AuthorityRow[]; total: number };
+            try {
+                loaded = await listRows<AuthorityRow>(TABLES.AUTHORITIES, queries);
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching authorities:', error);
                 toast.error('Failed to load authorities.');
                 setAuthorities([]);
                 setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as AuthorityRow[];
-                if (rows.length === 0 && page > 0) {
-                    // Past the last page (rows changed elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
-                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
-                    return;
-                }
-                setAuthorities(rows.map(toAuthority));
-                setTotalCount(count ?? null);
+                setLoading(false);
+                return;
             }
+            if (cancelled) return;
+            if (loaded.rows.length === 0 && page > 0) {
+                // Past the last page (rows changed elsewhere): step back.
+                const lastPage = loaded.total ? Math.ceil(loaded.total / PAGE_SIZE) - 1 : page - 1;
+                setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                return;
+            }
+            setAuthorities(loaded.rows.map(toAuthority));
+            setTotalCount(loaded.total);
             setLoading(false);
         }
         void load();
@@ -211,27 +221,31 @@ export default function AuthoritiesPage() {
         async function loadCoverage() {
             // Page through every row: a single request is silently truncated at
             // max-rows, which would report covered LGAs as gaps.
-            const rows: { coverage_lga: string | null; coverage_state: string | null }[] = [];
+            const rows: { coverageLga: string | null; coverageState: string | null }[] = [];
             for (let from = 0; ; from += COVERAGE_PAGE_SIZE) {
-                const { data, error } = await getSupabase()
-                    .from(TABLES.AUTHORITIES)
-                    .select('coverage_lga, coverage_state')
-                    .order('id', { ascending: true })
-                    .range(from, from + COVERAGE_PAGE_SIZE - 1);
-                if (cancelled) return;
-                if (error) {
+                let page: typeof rows;
+                try {
+                    const result = await listRows<(typeof rows)[number]>(TABLES.AUTHORITIES, [
+                        Query.orderAsc('$id'),
+                        Query.limit(COVERAGE_PAGE_SIZE),
+                        Query.offset(from),
+                        Query.select(['coverageLga', 'coverageState']),
+                    ]);
+                    page = result.rows;
+                } catch (error) {
+                    if (cancelled) return;
                     console.error('Error fetching authority coverage:', error);
                     setCoverage(null);
                     return;
                 }
-                const page = (data ?? []) as typeof rows;
+                if (cancelled) return;
                 rows.push(...page);
                 if (page.length < COVERAGE_PAGE_SIZE) break;
             }
             setCoverage(
                 rows.map((r) => ({
-                    lga: r.coverage_lga ?? '',
-                    state: r.coverage_state?.trim() ?? '',
+                    lga: r.coverageLga ?? '',
+                    state: r.coverageState?.trim() ?? '',
                 })),
             );
         }
@@ -299,8 +313,8 @@ export default function AuthoritiesPage() {
         // re-checked here, not just read off the select, so a tampered
         // <option value="|Obi"> (or "Atlantis|Obi", or a bare "Obi") is
         // refused rather than sent. The database enforces the same rule
-        // (authorities.coverage_state NOT NULL + the composite foreign key
-        // authorities_coverage_lga_fkey into public.nigeria_lgas, migration
+        // (authorities.coverageState NOT NULL + the composite foreign key
+        // authorities_coverageLga_fkey into public.nigeria_lgas, migration
         // 20260927090000); this is the message that explains it.
         const { state, lga } = parseLgaKey(form.coverage);
         if (!isLga(lga)) {
@@ -320,21 +334,21 @@ export default function AuthoritiesPage() {
 
         setSaving(true);
         try {
-            const supabase = getSupabase();
             // The same number twice in one (state, LGA) would only be texted once; refuse the
             // duplicate. Per (state, LGA), not per LGA name: the same desk may
             // legitimately cover Obi in Benue and Obi in Nasarawa.
             // Stored phones may predate normalisation ("0803 123 4567"), so compare
             // the normalised forms of every contact for this (state, LGA), not the raw column.
-            let dup = supabase
-                .from(TABLES.AUTHORITIES)
-                .select('id, phone')
-                .eq('coverage_lga', lga)
-                .eq('coverage_state', state);
-            if (form.id) dup = dup.neq('id', form.id);
-            const { data: dupRows, error: dupError } = await dup;
-            if (dupError) throw dupError;
-            const existing = (dupRows ?? []) as { id: string; phone: string | null }[];
+            const { rows: dupRows } = await listRows<{ phone: string | null }>(
+                TABLES.AUTHORITIES,
+                [
+                    Query.equal('coverageLga', lga),
+                    Query.equal('coverageState', state),
+                    Query.limit(COVERAGE_PAGE_SIZE),
+                    Query.select(['phone']),
+                ],
+            );
+            const existing = dupRows.filter((r) => r.id !== form.id);
             if (existing.some((r) => normalizeNigerianPhone(r.phone) === phone)) {
                 toast.error(`${phone} is already listed for ${where}.`);
                 return;
@@ -344,15 +358,11 @@ export default function AuthoritiesPage() {
                 name,
                 organization: organization || null,
                 phone,
-                coverage_lga: lga,
-                coverage_state: state,
+                coverageLga: lga,
+                coverageState: state,
             };
-            const { data, error } = form.id
-                ? await supabase.from(TABLES.AUTHORITIES).update(values).eq('id', form.id).select('id')
-                : await supabase.from(TABLES.AUTHORITIES).insert(values).select('id');
-            if (error) throw error;
-            // RLS filters rows silently: no row back means the write was not allowed.
-            if (!data || data.length === 0) throw new Error('Not found or not permitted');
+            if (form.id) await updateRow(TABLES.AUTHORITIES, form.id, values);
+            else await createRow(TABLES.AUTHORITIES, ID.unique(), values);
             toast.success(form.id ? 'Authority updated' : 'Authority added');
             setForm(null);
             reload();
@@ -370,13 +380,7 @@ export default function AuthoritiesPage() {
         setDeleteTarget(null);
         setDeletingId(target.id);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.AUTHORITIES)
-                .delete()
-                .eq('id', target.id)
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Not found or not permitted');
+            await deleteRow(TABLES.AUTHORITIES, target.id);
             toast.success('Authority deleted');
             if (authorities.length === 1 && page > 0) setPage((p) => p - 1);
             else reload();
