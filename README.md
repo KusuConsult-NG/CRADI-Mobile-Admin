@@ -194,9 +194,18 @@ and refusals, the optimistic lock, the `operation` Function, the string
 The seeder only adds rows — pointed at a real server, a seeder that
 clears tables is one typo from clearing the wrong ones.
 
+`npm run test:e2e:live:clean` removes the seeded rows afterwards, by id
+rather than by prefix — run it after a Cloud run. The panel's own writes
+during the run (an alert, an article, a link, an authority) are not
+seeded rows and are left alone; the script prints the stamp they carry.
+
 The project needs a **web platform** registered for the panel's hostname
 (`localhost` locally, the real domain in production), or Appwrite refuses
 every request from the browser as an unknown origin.
+
+Against **Cloud** rather than the local stack, follow
+`CRADI-mobile/docs/CLOUD-VERIFICATION.md`: same two commands, plus the
+steps that must come first and the three questions only Cloud answers.
 
 ### How the session is held
 

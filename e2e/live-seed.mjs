@@ -5,16 +5,21 @@
  *
  *   source ../CRADI-mobile/infra/appwrite/local/.env.local
  *   node e2e/live-seed.mjs
+ *   node e2e/live-seed.mjs --clean     # remove what the last run made
  *
  * Everything it creates is prefixed `live-` and stamped with the run's
  * start time, so a second run does not collide with the first and the
- * rows a previous run left behind are harmless. It does not delete
- * anything: this is pointed at a real server, and a seeder that clears
- * tables is one typo away from clearing the wrong ones.
+ * rows a previous run left behind are harmless.
+ *
+ * `--clean` removes exactly the ids recorded in `e2e/.live.json` and
+ * nothing else — never a prefix sweep. This is pointed at a real server,
+ * and "delete everything matching `live-`" is one typo away from
+ * deleting the wrong things. Run it after a Cloud run; on a throwaway
+ * stack it does not matter.
  *
  * Writes `e2e/.live.json` (gitignored) for the spec to read.
  */
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 
@@ -48,6 +53,50 @@ const must = async (what, p) => {
 };
 
 const row = (table, id = '') => `/tablesdb/${DB}/tables/${table}/rows${id ? `/${id}` : ''}`;
+const here = dirname(fileURLToPath(import.meta.url));
+const statePath = resolve(here, '.live.json');
+
+if (process.argv.includes('--clean')) {
+    let previous;
+    try {
+        previous = JSON.parse(readFileSync(statePath, 'utf8'));
+    } catch {
+        console.error('Nothing to clean: e2e/.live.json is missing or unreadable.');
+        process.exit(1);
+    }
+    // Only what that run recorded, by id. The panel's own writes during
+    // the run (an alert, an article, a link, an authority) carry the same
+    // stamp in their titles and are listed by it here rather than swept
+    // by prefix, because a prefix match is a query and a query can be
+    // wrong in ways a list of ids cannot.
+    const stamped = previous.stamp;
+    const targets = [
+        ['users', previous.admin?.id],
+        ['users', previous.pending?.id],
+        ['profiles', previous.admin?.id],
+        ['profiles', previous.pending?.id],
+        ['reports', previous.reportId],
+        ['reports', previous.verifiedId],
+    ].filter(([, id]) => !!id);
+
+    let removed = 0;
+    const left = [];
+    for (const [table, id] of targets) {
+        const path = table === 'users' ? `/users/${encodeURIComponent(id)}` : row(table, id);
+        const r = await call(path, { method: 'DELETE' });
+        if (r.ok || r.status === 404) removed += 1;
+        else left.push(`${table} ${id}: ${r.status} ${r.body?.message ?? ''}`);
+    }
+    console.log(`removed ${removed}/${targets.length} seeded rows from run ${stamped}`);
+    for (const l of left) console.log(`  LEFT BEHIND — ${l}`);
+    console.log(
+        `\nThe panel's own writes during that run are not seeded rows and are left alone.\n` +
+            `They carry "${stamped}" in their title: an alert, a knowledge article, a news\n` +
+            'link and an authority. Remove them from the console if this was a real project.',
+    );
+    process.exit(left.length ? 1 : 0);
+}
+
 const stamp = Date.now().toString(36);
 const id = (prefix) => `live-${prefix}-${stamp}`.slice(0, 36);
 
@@ -146,8 +195,7 @@ const out = {
     reportId,
     verifiedId,
 };
-const here = dirname(fileURLToPath(import.meta.url));
-writeFileSync(resolve(here, '.live.json'), `${JSON.stringify(out, null, 2)}\n`);
+writeFileSync(statePath, `${JSON.stringify(out, null, 2)}\n`);
 console.log(`seeded run ${stamp}`);
 console.log(`  admin    ${adminEmail} / ${PASSWORD}`);
 console.log(`  pending  ${pendingId}`);

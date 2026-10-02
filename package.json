@@ -11,7 +11,8 @@
     "typecheck": "tsc --noEmit",
     "test:e2e": "playwright test -c e2e/playwright.config.ts",
     "test:e2e:live": "playwright test -c e2e/live.config.ts",
-    "test:e2e:live:seed": "node e2e/live-seed.mjs"
+    "test:e2e:live:seed": "node e2e/live-seed.mjs",
+    "test:e2e:live:clean": "node e2e/live-seed.mjs --clean"
   },
   "dependencies": {
     "appwrite": "^28.1.0",
