@@ -43,9 +43,9 @@ test.describe('operations arithmetic', () => {
         const rows: FlowRow[] = [
             // Submitted long before the window, approved in the latest week.
             {
-                submitted_at: new Date(MON - 200 * DAY).toISOString(),
-                approved_at: new Date(MON + DAY).toISOString(),
-                rejected_at: null,
+                submittedAt: new Date(MON - 200 * DAY).toISOString(),
+                approvedAt: new Date(MON + DAY).toISOString(),
+                rejectedAt: null,
             },
         ];
         const weeks = buildFlow(rows, MON);
@@ -58,12 +58,12 @@ test.describe('operations arithmetic', () => {
 
     test('rejections count as decisions, and a row is never counted twice', () => {
         const rows: FlowRow[] = [
-            { submitted_at: new Date(MON).toISOString(), approved_at: null, rejected_at: new Date(MON).toISOString() },
+            { submittedAt: new Date(MON).toISOString(), approvedAt: null, rejectedAt: new Date(MON).toISOString() },
             // Both set (should not happen): approval wins, still one decision.
             {
-                submitted_at: new Date(MON).toISOString(),
-                approved_at: new Date(MON).toISOString(),
-                rejected_at: new Date(MON).toISOString(),
+                submittedAt: new Date(MON).toISOString(),
+                approvedAt: new Date(MON).toISOString(),
+                rejectedAt: new Date(MON).toISOString(),
             },
         ];
         const weeks = buildFlow(rows, MON);
@@ -73,9 +73,9 @@ test.describe('operations arithmetic', () => {
 
     test('malformed and undecided rows are skipped rather than throwing', () => {
         const rows: FlowRow[] = [
-            { submitted_at: 'not-a-date', approved_at: null, rejected_at: null },
-            { submitted_at: null, approved_at: null, rejected_at: null },
-            { submitted_at: new Date(MON).toISOString(), approved_at: null, rejected_at: null },
+            { submittedAt: 'not-a-date', approvedAt: null, rejectedAt: null },
+            { submittedAt: null, approvedAt: null, rejectedAt: null },
+            { submittedAt: new Date(MON).toISOString(), approvedAt: null, rejectedAt: null },
         ];
         const weeks = buildFlow(rows, MON);
         expect(weeks[7].submitted).toBe(1);
@@ -85,10 +85,10 @@ test.describe('operations arithmetic', () => {
     test('decisionHours is the median span, ignoring undecided and reversed rows', () => {
         const at = (h: number) => new Date(MON + h * 3_600_000).toISOString();
         const rows: FlowRow[] = [
-            { submitted_at: at(0), approved_at: at(2), rejected_at: null }, // 2h
-            { submitted_at: at(0), approved_at: null, rejected_at: at(6) }, // 6h
-            { submitted_at: at(0), approved_at: null, rejected_at: null }, // undecided
-            { submitted_at: at(10), approved_at: at(1), rejected_at: null }, // decided before submitted
+            { submittedAt: at(0), approvedAt: at(2), rejectedAt: null }, // 2h
+            { submittedAt: at(0), approvedAt: null, rejectedAt: at(6) }, // 6h
+            { submittedAt: at(0), approvedAt: null, rejectedAt: null }, // undecided
+            { submittedAt: at(10), approvedAt: at(1), rejectedAt: null }, // decided before submitted
         ];
         expect(decisionHours(rows)).toBe(4); // median of [2, 6]
         expect(decisionHours([])).toBeNull();

@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { createRow, deleteRow, listRows, Query, updateRow } from '@/lib/data';
+import { ID } from 'appwrite';
 import { TABLES, errorMessage, toDate } from '@/lib/constants';
 import Pagination from '@/components/Pagination';
 import Modal from '@/components/Modal';
@@ -36,9 +37,9 @@ interface NewsLinkRow {
     title: string | null;
     url: string | null;
     source: string | null;
-    sort_order: number | null;
-    is_active: boolean | null;
-    updated_at: string | null;
+    sortOrder: number | null;
+    isActive: boolean | null;
+    updatedAt: string | null;
 }
 
 interface LinkForm {
@@ -63,9 +64,9 @@ function toLink(row: NewsLinkRow): NewsLink {
         title: row.title?.trim() ?? '',
         url: row.url?.trim() ?? '',
         source: row.source?.trim() ?? '',
-        sortOrder: typeof row.sort_order === 'number' ? row.sort_order : 0,
-        isActive: row.is_active === true,
-        updatedAt: toDate(row.updated_at),
+        sortOrder: typeof row.sortOrder === 'number' ? row.sortOrder : 0,
+        isActive: row.isActive === true,
+        updatedAt: toDate(row.updatedAt),
     };
 }
 
@@ -121,30 +122,32 @@ export default function NewsLinksPage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            // Same order as the mobile app: sort_order, then oldest first.
-            const { data, count, error } = await getSupabase()
-                .from(TABLES.NEWS_LINKS)
-                .select('id, title, url, source, sort_order, is_active, updated_at', { count: 'exact' })
-                .order('sort_order', { ascending: true })
-                .order('created_at', { ascending: true })
-                .order('id', { ascending: true })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-            if (cancelled) return;
-            if (error) {
-                console.error('Error fetching news links:', error);
-                toast.error('Failed to load news links.');
-                setLinks([]);
-                setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as NewsLinkRow[];
+            // Same order as the mobile app: sortOrder, then oldest first.
+            // `$id` last so the page boundary is stable when two rows share
+            // both — Postgres needed the same tiebreak.
+            try {
+                const { rows, total } = await listRows<NewsLinkRow>(TABLES.NEWS_LINKS, [
+                    Query.orderAsc('sortOrder'),
+                    Query.orderAsc('$createdAt'),
+                    Query.orderAsc('$id'),
+                    Query.limit(PAGE_SIZE),
+                    Query.offset(page * PAGE_SIZE),
+                ]);
+                if (cancelled) return;
                 if (rows.length === 0 && page > 0) {
                     // Past the last page (rows changed elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
+                    const lastPage = total ? Math.ceil(total / PAGE_SIZE) - 1 : page - 1;
                     setPage(Math.max(0, Math.min(page - 1, lastPage)));
                     return;
                 }
                 setLinks(rows.map(toLink));
-                setTotalCount(count ?? null);
+                setTotalCount(total);
+            } catch (error) {
+                if (cancelled) return;
+                console.error('Error fetching news links:', error);
+                toast.error('Failed to load news links.');
+                setLinks([]);
+                setTotalCount(null);
             }
             setLoading(false);
         }
@@ -174,26 +177,21 @@ export default function NewsLinksPage() {
 
         setSaving(true);
         try {
-            const supabase = getSupabase();
             let sortOrder = result.values.sortOrder;
             if (sortOrder === null) {
                 // New link without an explicit order: place it after the last one.
-                const { data: last, error: lastError } = await supabase
-                    .from(TABLES.NEWS_LINKS)
-                    .select('sort_order')
-                    .order('sort_order', { ascending: false })
-                    .limit(1);
-                if (lastError) throw lastError;
-                const max = (last as { sort_order: number | null }[] | null)?.[0]?.sort_order;
+                const { rows: last } = await listRows<{ sortOrder: number | null }>(
+                    TABLES.NEWS_LINKS,
+                    [Query.orderDesc('sortOrder'), Query.limit(1), Query.select(['sortOrder'])],
+                );
+                const max = last[0]?.sortOrder;
                 sortOrder = typeof max === 'number' ? Math.min(max + SORT_STEP, INT_MAX) : SORT_STEP;
             }
-            const values = { title, url, source, sort_order: sortOrder, is_active: isActive };
-            const { data, error } = form.id
-                ? await supabase.from(TABLES.NEWS_LINKS).update(values).eq('id', form.id).select('id')
-                : await supabase.from(TABLES.NEWS_LINKS).insert(values).select('id');
-            if (error) throw error;
-            // RLS filters rows silently: no row back means the write was not allowed.
-            if (!data || data.length === 0) throw new Error('Not found or not permitted');
+            const values = { title, url, source, sortOrder, isActive };
+            // A refusal throws: the `write` Function answers 403 rather than
+            // filtering the row away silently, which is what RLS did.
+            if (form.id) await updateRow(TABLES.NEWS_LINKS, form.id, values);
+            else await createRow(TABLES.NEWS_LINKS, ID.unique(), values);
             toast.success(form.id ? 'Link updated' : 'Link added');
             setForm(null);
             reload();
@@ -209,13 +207,7 @@ export default function NewsLinksPage() {
         if (busyId) return;
         setBusyId(link.id);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.NEWS_LINKS)
-                .update({ is_active: !link.isActive })
-                .eq('id', link.id)
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Not found or not permitted');
+            await updateRow(TABLES.NEWS_LINKS, link.id, { isActive: !link.isActive });
             toast.success(link.isActive ? 'Link hidden from the app' : 'Link shown in the app');
             reload();
         } catch (error) {
@@ -232,13 +224,7 @@ export default function NewsLinksPage() {
         setDeleteTarget(null);
         setBusyId(target.id);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.NEWS_LINKS)
-                .delete()
-                .eq('id', target.id)
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Not found or not permitted');
+            await deleteRow(TABLES.NEWS_LINKS, target.id);
             toast.success('Link deleted');
             if (links.length === 1 && page > 0) setPage((p) => p - 1);
             else reload();

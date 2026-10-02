@@ -2,7 +2,7 @@
 
 import { useAuth } from '@/lib/auth-context';
 import { useEffect, useState } from 'react';
-import { getSupabase } from '@/lib/supabase';
+import { countRows, Query } from '@/lib/data';
 import { TABLES } from '@/lib/constants';
 import {
     Users,
@@ -41,17 +41,15 @@ const EMPTY_STATS: Stats = {
     activeAlerts: null,
 };
 
-type CountFilter = { column: string; op: 'eq' | 'in'; value: string | boolean | string[] };
-
-/** Exact row count (HEAD request, no rows transferred), subject to RLS. */
-async function countOf(table: string, filter?: CountFilter): Promise<number> {
-    let query = getSupabase().from(table).select('*', { count: 'exact', head: true });
-    if (filter?.op === 'eq') query = query.eq(filter.column, filter.value);
-    if (filter?.op === 'in' && Array.isArray(filter.value)) query = query.in(filter.column, filter.value);
-    const { count, error } = await query;
-    if (error) throw error;
-    return count ?? 0;
-}
+/**
+ * Rows matching, without transferring them.
+ *
+ * Appwrite has no HEAD-request count: a list reports the total for the
+ * query regardless of the page size, so `countRows` asks for one row and
+ * reads the total. What the caller sees is the same number, subject to
+ * the same permissions.
+ */
+const countOf = (table: string, queries: string[] = []) => countRows(table, queries);
 
 const STAT_KEYS: (keyof Stats)[] = [
     'totalUsers',
@@ -68,11 +66,11 @@ async function loadStats(): Promise<{ stats: Stats; failures: number; total: num
     const results = await Promise.allSettled([
         countOf(TABLES.PROFILES),
         countOf(TABLES.REPORTS),
-        countOf(TABLES.REPORTS, { column: 'status', op: 'eq', value: 'pending' }),
-        countOf(TABLES.REPORTS, { column: 'status', op: 'in', value: ['approved', 'verified'] }),
+        countOf(TABLES.REPORTS, [Query.equal('status', 'pending')]),
+        countOf(TABLES.REPORTS, [Query.equal('status', ['approved', 'verified'])]),
         countOf(TABLES.CONTACTS),
         countOf(TABLES.KNOWLEDGE_BASE),
-        countOf(TABLES.ALERTS, { column: 'is_active', op: 'eq', value: true }),
+        countOf(TABLES.ALERTS, [Query.equal('isActive', true)]),
     ]);
 
     const stats: Stats = { ...EMPTY_STATS };

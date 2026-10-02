@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { listRows, Query, upsertRow } from '@/lib/data';
 import { TABLES, errorMessage, toDate } from '@/lib/constants';
 import { Settings as SettingsIcon, Loader2, Save, RotateCcw } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -107,7 +107,7 @@ type Draft = Record<string, string | boolean>;
 interface SettingRow {
     key: string;
     value: unknown;
-    updated_at: string | null;
+    updatedAt: string | null;
 }
 
 interface Loaded {
@@ -188,24 +188,29 @@ export default function SettingsPage() {
         let cancelled = false;
         async function load() {
             setLoadError(false);
-            const { data, error } = await getSupabase()
-                .from(TABLES.APP_SETTINGS)
-                .select('key, value, updated_at')
-                .in('key', SETTING_KEYS);
-            if (cancelled) return;
-            if (error) {
+            let loadedRows: SettingRow[];
+            try {
+                const result = await listRows<SettingRow>(TABLES.APP_SETTINGS, [
+                    Query.equal('key', SETTING_KEYS),
+                    Query.select(['key', 'value', 'updatedAt']),
+                    Query.limit(SETTING_KEYS.length),
+                ]);
+                loadedRows = result.rows;
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching settings:', error);
                 toast.error('Failed to load settings.');
                 setLoadError(true);
                 return;
             }
-            const rows = new Map(((data ?? []) as SettingRow[]).map((r) => [r.key, r]));
+            if (cancelled) return;
+            const rows = new Map(loadedRows.map((r) => [r.key, r]));
             const next: Loaded = { values: {}, present: {}, updatedAt: {} };
             for (const def of SETTINGS) {
                 const row = rows.get(def.key);
                 next.values[def.key] = toDraftValue(def, row ? row.value : undefined);
                 next.present[def.key] = !!row;
-                next.updatedAt[def.key] = toDate(row?.updated_at);
+                next.updatedAt[def.key] = toDate(row?.updatedAt);
             }
             setLoaded(next);
             setDraft(next.values);
@@ -252,18 +257,22 @@ export default function SettingsPage() {
         const rows = changed.map((def) => {
             const result = parseValue(def, draft[def.key]);
             // Validated above.
-            return { key: def.key, value: 'value' in result ? result.value : null, updated_at: now };
+            return { key: def.key, value: 'value' in result ? result.value : null, updatedAt: now };
         });
 
         setSaving(true);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.APP_SETTINGS)
-                .upsert(rows, { onConflict: 'key' })
-                .select('key');
-            if (error) throw error;
-            // RLS filters rows silently: fewer rows back means the write was not allowed.
-            if (!data || data.length !== rows.length) throw new Error('Not permitted');
+            // One call per setting: the `write` Function takes one document
+            // at a time. Upsert because a setting left at its default has
+            // never been stored, so the first save of it is a create — and
+            // the row id *is* the key, so the two are the same write.
+            //
+            // Sequential rather than parallel, so a refusal stops at the
+            // first one instead of half-applying a batch the admin then has
+            // to reconcile.
+            for (const { key, value, updatedAt } of rows) {
+                await upsertRow(TABLES.APP_SETTINGS, key, { key, value, updatedAt });
+            }
             toast.success(`Saved ${rows.length} setting${rows.length === 1 ? '' : 's'}`);
             setReloadKey((k) => k + 1);
         } catch (error) {

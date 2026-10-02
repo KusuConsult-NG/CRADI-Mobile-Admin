@@ -109,6 +109,21 @@ export async function updateRow<T = Columns>(
     return withId<T>(await write('update', table, rowId, data));
 }
 
+/**
+ * Writes the row whether or not it is already there.
+ *
+ * For the tables the panel keys by a natural id — `app_settings`, whose
+ * row id is the setting key — a create and an update are the same
+ * intent, and asking which one it is first would be a race.
+ */
+export async function upsertRow<T = Columns>(
+    table: string,
+    rowId: string,
+    data: Record<string, unknown>,
+): Promise<WithId<T>> {
+    return withId<T>(await write('upsert', table, rowId, data));
+}
+
 export async function deleteRow(table: string, rowId: string): Promise<void> {
     await write('delete', table, rowId, {});
 }
@@ -122,7 +137,7 @@ export async function callOperation(
 }
 
 async function write(
-    op: 'create' | 'update' | 'delete',
+    op: 'create' | 'update' | 'upsert' | 'delete',
     collection: string,
     documentId: string,
     data: Record<string, unknown>,
