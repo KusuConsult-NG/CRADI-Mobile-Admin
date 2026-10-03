@@ -28,10 +28,16 @@ export async function executeFunction(
     appwrite: Appwrite,
     functionId: string,
     payload: Record<string, unknown>,
+    // Which handler inside the merged Function runs; Appwrite passes it
+    // through as `req.path`.
+    path = '/',
 ): Promise<Record<string, unknown>> {
     const execution = await appwrite.functions.createExecution({
         functionId,
         body: JSON.stringify(payload),
+        // The web SDK's parameter is `xpath`; it goes on the wire as `path`,
+        // which is what the Function reads as `req.path`.
+        xpath: path,
         async: false,
         method: ExecutionMethod.POST,
         headers: { 'content-type': 'application/json' },

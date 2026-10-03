@@ -610,6 +610,9 @@ function isServer(req) {
 
 const MIN_PASSWORD_LENGTH = 8;
 
+/** The merged client Function's id; must match NEXT_PUBLIC_APPWRITE_FN_CLIENT. */
+const CLIENT_FUNCTION = 'client';
+
 // ───────────────────────────── functions ────────────────────────────────
 
 /**
@@ -862,15 +865,30 @@ async function route(req, res, url, body) {
     const fn = path.match(/^\/functions\/([^/]+)\/executions$/);
     if (fn && method === 'POST') {
         const id = fn[1];
+        if (id !== CLIENT_FUNCTION) {
+            throw new AppwriteError(404, 'function_not_found', 'Function with the requested ID could not be found.');
+        }
         const payload = typeof body?.body === 'string' ? JSON.parse(body.body) : (body?.body ?? {});
-        // `auth` runs for a guest: recovery starts before there is a session.
-        if (id === 'auth') return send(res, 201, execution(id, runAuth(payload)));
+        // The three client Functions were merged into one that routes on the
+        // execution's path, because the Cloud plan allows two Functions
+        // against the seven the backend needs. Same normalisation as
+        // `functions/cradi/src/client.js`, so a caller that forgets the path
+        // 404s here exactly as it would against the real Function.
+        const route = `/${String(body?.path ?? '').trim().replace(/^\/+|\/+$/g, '')}`;
+
+        // `/auth` runs for a guest: recovery starts before there is a session.
+        if (route === '/auth') return send(res, 201, execution(id, runAuth(payload)));
 
         const user = requireCaller(req);
         let result;
-        if (id === 'write') result = runWrite(user, payload);
-        else if (id === 'operation') result = runOperation(user, payload);
-        else throw new AppwriteError(404, 'function_not_found', 'Function with the requested ID could not be found.');
+        if (route === '/write') result = runWrite(user, payload);
+        else if (route === '/operation') result = runOperation(user, payload);
+        else {
+            return send(res, 201, execution(id, {
+                status: 404,
+                body: { message: `Unknown path: ${route}`, type: 'general_route_not_found' },
+            }));
+        }
         return send(res, 201, execution(id, result));
     }
 

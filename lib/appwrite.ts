@@ -9,11 +9,21 @@ const PROJECT_ID = process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID?.trim() || '';
 
 export const DATABASE_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID?.trim() || 'cradi';
 
-/** Function ids, as provisioned by CRADI-mobile/infra/appwrite/plan.mjs. */
-export const FUNCTIONS = {
-    WRITE: 'write',
-    AUTH: 'auth',
-    OPERATION: 'operation',
+/**
+ * The one Function a client calls, and the routes within it.
+ *
+ * It was three — `write`, `auth` and `operation` — and the Cloud plan
+ * allows two Functions against the seven the backend needs, so they
+ * share an entrypoint that routes on the execution's path. See
+ * `CRADI-mobile/functions/cradi/src/client.js`.
+ */
+export const CLIENT_FUNCTION =
+    process.env.NEXT_PUBLIC_APPWRITE_FN_CLIENT?.trim() || 'client';
+
+export const ROUTES = {
+    WRITE: '/write',
+    AUTH: '/auth',
+    OPERATION: '/operation',
 } as const;
 
 /**

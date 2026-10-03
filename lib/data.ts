@@ -1,7 +1,7 @@
 'use client';
 
 import { Query, type Models } from 'appwrite';
-import { DATABASE_ID, FUNCTIONS, getAppwrite } from '@/lib/appwrite';
+import { CLIENT_FUNCTION, DATABASE_ID, ROUTES, getAppwrite } from '@/lib/appwrite';
 import { BackendError, executeFunction } from '@/lib/function-call';
 
 /**
@@ -144,7 +144,7 @@ export async function callOperation(
     operation: string,
     params: Record<string, unknown> = {},
 ): Promise<Record<string, unknown>> {
-    return executeFunction(getAppwrite(), FUNCTIONS.OPERATION, { operation, params });
+    return executeFunction(getAppwrite(), CLIENT_FUNCTION, { operation, params }, ROUTES.OPERATION);
 }
 
 async function write(
@@ -154,13 +154,13 @@ async function write(
     data: Record<string, unknown>,
     expect?: Record<string, unknown>,
 ): Promise<Row> {
-    const body = await executeFunction(getAppwrite(), FUNCTIONS.WRITE, {
+    const body = await executeFunction(getAppwrite(), CLIENT_FUNCTION, {
         op,
         collection,
         documentId,
         data,
         ...(expect ? { expect } : {}),
-    });
+    }, ROUTES.WRITE);
     const document = body.document;
     if (document && typeof document === 'object') return document as Row;
     if (op === 'delete') return {} as Row;

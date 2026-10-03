@@ -218,9 +218,7 @@ test.describe('reports', () => {
         await expect(toast(page, 'Report marked as pending')).toBeVisible();
         await expect(target.getByText('Pending', { exact: true })).toBeVisible();
         await expect(target).not.toContainText('verifications');
-        const rpc = (await mock.requests({ method: 'POST', path: '/functions/operation/executions' })).map(
-            (r) => JSON.parse((r.body as { body: string }).body) as { operation: string; params: unknown },
-        );
+        const rpc = await mock.calls<{ operation: string; params: unknown }>('/operation');
         expect(rpc).toHaveLength(1);
         const row = await reportBy(mock, 'Bush burning near farms');
         expect(rpc[0]).toEqual({ operation: 'reopen_report', params: { p_report_id: row.$id } });

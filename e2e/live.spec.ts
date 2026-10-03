@@ -307,7 +307,7 @@ test.describe('the panel against a live Appwrite', () => {
         // Appwrite has none, so the Function is the whole defence, and
         // an LGA with no state means an SMS contact for the wrong Obi.
         const documentId = `tampered-${Date.now()}`.slice(0, 36);
-        const res = await fetch(`${seed.endpoint}/functions/write/executions`, {
+        const res = await fetch(`${seed.endpoint}/functions/client/executions`, {
             method: 'POST',
             headers: await asAdmin(),
             body: JSON.stringify({
@@ -317,6 +317,7 @@ test.describe('the panel against a live Appwrite', () => {
                     documentId,
                     data: { name: 'Tampered', phone: `+23480${String(Date.now()).slice(-8)}`, coverageLga: 'Obi' },
                 }),
+                path: '/write',
                 async: false,
                 method: 'POST',
             }),

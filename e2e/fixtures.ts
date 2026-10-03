@@ -24,6 +24,9 @@ const PNG_1PX =
 
 export const ADMIN = { email: 'admin@cradi.test', password: 'admin-pass' };
 
+/** Every Function call goes to the one merged Function; the route is in the body. */
+export const CLIENT_EXECUTIONS = '/functions/client/executions';
+
 export interface LoggedRequest {
     method: string;
     path: string;
@@ -43,9 +46,20 @@ export interface WriteCall {
     expect?: Record<string, unknown>;
 }
 
+/** The routes inside the merged client Function (see lib/appwrite.ts). */
+export type FunctionRoute = '/write' | '/auth' | '/operation';
+
 export interface MockApi {
     /** Requests the mock received (browser and Next server), optionally filtered. */
     requests(filter?: { method?: string; path?: string | RegExp }): Promise<LoggedRequest[]>;
+    /**
+     * Payloads the panel sent to one route of the client Function, in order.
+     *
+     * `write`, `auth` and `operation` are one deployed Function that routes
+     * on the execution's path, so "which Function was called?" is a question
+     * about the request body rather than the URL.
+     */
+    calls<T = Record<string, unknown>>(route: FunctionRoute): Promise<T[]>;
     /** Current rows of a table. */
     table<T = Record<string, unknown>>(name: string): Promise<T[]>;
     /**
@@ -85,13 +99,29 @@ export const test = base.extend<{ mock: MockApi; consoleGuard: ConsoleGuard }>({
                                 (typeof filter.path === 'string' ? r.path === filter.path : filter.path.test(r.path))),
                     );
                 },
+                async calls<T>(route: FunctionRoute) {
+                    const all = (await mockFetch('/__mock/requests')) as LoggedRequest[];
+                    return all
+                        .filter(
+                            (r) =>
+                                r.method === 'POST' &&
+                                r.path === CLIENT_EXECUTIONS &&
+                                (r.body as { path?: string })?.path === route,
+                        )
+                        .map((r) => JSON.parse((r.body as { body: string }).body) as T);
+                },
                 async table<T>(name: string) {
                     return (await mockFetch(`/__mock/table/${name}`)) as T[];
                 },
                 async writes(filter) {
                     const all = (await mockFetch('/__mock/requests')) as LoggedRequest[];
                     return all
-                        .filter((r) => r.method === 'POST' && r.path === '/functions/write/executions')
+                        .filter(
+                            (r) =>
+                                r.method === 'POST' &&
+                                r.path === CLIENT_EXECUTIONS &&
+                                (r.body as { path?: string })?.path === '/write',
+                        )
                         .map((r) => JSON.parse((r.body as { body: string }).body) as WriteCall)
                         .filter(
                             (w) =>

@@ -5,7 +5,7 @@ import Link from 'next/link';
 import Image from 'next/image';
 import toast from 'react-hot-toast';
 import { AlertCircle, CheckCircle2, Eye, EyeOff, Loader2 } from 'lucide-react';
-import { createRecoveryClient, FUNCTIONS, type Appwrite } from '@/lib/appwrite';
+import { CLIENT_FUNCTION, ROUTES, createRecoveryClient, type Appwrite } from '@/lib/appwrite';
 import { BackendError, executeFunction } from '@/lib/function-call';
 import { PASSWORD_RULES, validatePassword } from '@/lib/password';
 
@@ -131,10 +131,10 @@ export default function ResetPasswordPage() {
 
             setSending(true);
             try {
-                await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                await executeFunction(appwrite, CLIENT_FUNCTION, {
                     action: 'sendRecoveryCode',
                     email: address,
-                });
+                }, ROUTES.AUTH);
                 // Deliberately the same message whether or not the address has
                 // an account: the Function answers identically, and saying "we sent
                 // you a code" only for real accounts would undo that.
@@ -173,11 +173,11 @@ export default function ResetPasswordPage() {
 
             setSaving(true);
             try {
-                const redeemed = await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                const redeemed = await executeFunction(appwrite, CLIENT_FUNCTION, {
                     action: 'verifyRecovery',
                     email: email.trim(),
                     code: typed,
-                });
+                }, ROUTES.AUTH);
                 const secret = redeemed.sessionSecret;
                 if (typeof secret !== 'string' || !secret) {
                     throw new BackendError('The server did not return a session', 502);
@@ -185,10 +185,10 @@ export default function ResetPasswordPage() {
                 appwrite.client.setSession(secret);
 
                 try {
-                    await executeFunction(appwrite, FUNCTIONS.AUTH, {
+                    await executeFunction(appwrite, CLIENT_FUNCTION, {
                         action: 'setPassword',
                         password,
-                    });
+                    }, ROUTES.AUTH);
                 } finally {
                     // Whether or not the change succeeded: this session exists
                     // only for it, and leaving it alive would leave a usable

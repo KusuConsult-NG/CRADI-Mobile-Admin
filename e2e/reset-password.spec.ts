@@ -50,9 +50,7 @@ test.describe('password reset (typed code)', () => {
     test('asks for the address, then the code, and sets the password', async ({ page, mock }) => {
         await requestCode(page, ADMIN.email);
 
-        const sent = (await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).map(
-            (r) => JSON.parse((r.body as { body: string }).body) as { action: string; email?: string },
-        );
+        const sent = await mock.calls<{ action: string; email?: string }>('/auth');
         expect(sent).toHaveLength(1);
         expect(sent[0]).toMatchObject({ action: 'sendRecoveryCode', email: ADMIN.email });
 
@@ -60,9 +58,7 @@ test.describe('password reset (typed code)', () => {
         await expect(page.getByRole('heading', { name: 'Password updated' })).toBeVisible();
         await expect(toast(page, 'Password updated successfully')).toBeVisible();
 
-        const actions = (await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).map(
-            (r) => (JSON.parse((r.body as { body: string }).body) as { action: string }).action,
-        );
+        const actions = (await mock.calls<{ action: string }>('/auth')).map((c) => c.action);
         expect(actions).toEqual(['sendRecoveryCode', 'verifyRecovery', 'setPassword']);
 
         // The recovery session is ended whether or not the change
@@ -82,7 +78,7 @@ test.describe('password reset (typed code)', () => {
         // Otherwise this page tells anyone which addresses are registered.
         await requestCode(page, 'nobody@cradi.test');
         await expect(toast(page, /a code is on its way/)).toBeVisible();
-        const sent = await mock.requests({ method: 'POST', path: '/functions/auth/executions' });
+        const sent = await mock.calls('/auth');
         expect(sent).toHaveLength(1);
     });
 
@@ -109,9 +105,7 @@ test.describe('password reset (typed code)', () => {
         await submit(page, 'ZZZZZZ', NEW_PASSWORD);
         await expect(alertBox(page)).toContainText('invalid or has expired');
 
-        const actions = (await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).map(
-            (r) => (JSON.parse((r.body as { body: string }).body) as { action: string }).action,
-        );
+        const actions = (await mock.calls<{ action: string }>('/auth')).map((c) => c.action);
         expect(actions).not.toContain('setPassword');
     });
 
@@ -128,9 +122,7 @@ test.describe('password reset (typed code)', () => {
 
         await submit(page, CODES.admin, NEW_PASSWORD, `${NEW_PASSWORD}x`);
         await expect(alertBox(page)).toContainText('Passwords do not match.');
-        const actions = (await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).map(
-            (r) => (JSON.parse((r.body as { body: string }).body) as { action: string }).action,
-        );
+        const actions = (await mock.calls<{ action: string }>('/auth')).map((c) => c.action);
         expect(actions).toEqual(['sendRecoveryCode']);
 
         // Fixing the confirmation lets it through.
@@ -142,7 +134,7 @@ test.describe('password reset (typed code)', () => {
         await requestCode(page, ADMIN.email);
         await submit(page, 'A1B', NEW_PASSWORD);
         await expect(alertBox(page)).toContainText('6-character code');
-        expect(await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).toHaveLength(1);
+        expect(await mock.calls('/auth')).toHaveLength(1);
     });
 
     test('weak passwords are refused by the shared rules', async ({ page, mock }) => {
@@ -162,9 +154,7 @@ test.describe('password reset (typed code)', () => {
             await expect(alertBox(page)).toContainText(message);
         }
 
-        const actions = (await mock.requests({ method: 'POST', path: '/functions/auth/executions' })).map(
-            (r) => (JSON.parse((r.body as { body: string }).body) as { action: string }).action,
-        );
+        const actions = (await mock.calls<{ action: string }>('/auth')).map((c) => c.action);
         expect(actions).toEqual(['sendRecoveryCode']);
 
         // The form stays usable: a good password still goes through.
