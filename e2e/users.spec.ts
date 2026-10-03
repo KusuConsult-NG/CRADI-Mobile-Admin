@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, openAsAdmin, toast, IDS, MOCK_URL } from './fixtures';
+import { test, expect, openAsAdmin, toast, toastsCleared, IDS, MOCK_URL } from './fixtures';
 
 type Profile = {
     $id: string;
@@ -258,6 +258,11 @@ test.describe('users', () => {
         await expect(row(page, 'Bola Approved')).toContainText('Agwatashi, Obi, Nasarawa');
         expect(await profileOf(mock, IDS.approved)).toMatchObject({ state: 'Nasarawa', lga: 'Obi', ward: 'Agwatashi' });
 
+        // Both changes raise the same toast, so the one above has to be
+        // gone before the next assertion can mean anything. See
+        // `toastsCleared`.
+        await toastsCleared(page);
+
         // A ward missing from the INEC list can be typed.
         await row(page, 'Bola Approved').getByRole('button', { name: 'Change location of Bola Approved' }).click();
         await ward.selectOption('__other__');
@@ -265,6 +270,11 @@ test.describe('users', () => {
         await dialog.getByRole('button', { name: 'Continue' }).click();
         await page.getByRole('dialog', { name: 'Change Location' }).getByRole('button', { name: 'Change location' }).click();
         await expect(toast(page, 'Location updated')).toBeVisible();
+        // The row is written from the same handler that sends the PATCH,
+        // after it resolves — so this waits on the write rather than on
+        // the notification about it, which is what the half above does
+        // and this half had omitted.
+        await expect(row(page, 'Bola Approved')).toContainText('New Layout, Obi, Nasarawa');
         expect(await profileOf(mock, IDS.approved)).toMatchObject({ state: 'Nasarawa', lga: 'Obi', ward: 'New Layout' });
     });
 

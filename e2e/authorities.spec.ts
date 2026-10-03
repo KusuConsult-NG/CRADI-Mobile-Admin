@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
+import { test, expect, openAsAdmin, toast, toastsCleared, MOCK_URL } from './fixtures';
 import { LOCATIONS } from '../lib/wards';
 
 type AuthorityRow = {
@@ -240,6 +240,10 @@ test.describe('authorities', () => {
         const panel = gaps(page);
         const obiChips = panel.getByRole('button', { name: 'Obi', exact: true });
         await expect(obiChips).toHaveCount(2);
+
+        // An earlier add in this test raised the same toast; the
+        // assertion below has to wait for a new one. See `toastsCleared`.
+        await toastsCleared(page);
 
         await page.getByRole('button', { name: 'Add Authority' }).click();
         const dialog = page.getByRole('dialog', { name: 'Add Authority' });

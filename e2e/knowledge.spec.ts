@@ -1,5 +1,5 @@
 import type { Page } from '@playwright/test';
-import { test, expect, openAsAdmin, toast } from './fixtures';
+import { test, expect, openAsAdmin, toast, toastsCleared } from './fixtures';
 
 type Article = { $id: string; title: string; category: string; hazardType: string; source: string; imageUrl: string | null };
 
@@ -89,6 +89,11 @@ test.describe('knowledge base', () => {
         await expect(toast(page, 'Article updated')).toBeVisible();
         let patch = (await mock.writes({ collection: 'knowledge_base', op: 'update' })).at(-1)!;
         expect(patch.data).toMatchObject({ category: 'Flood', hazardType: 'flood' });
+
+        // Same toast text twice in one test: without this the second
+        // assertion is answered by this one and the write log is read a
+        // save too early. See `toastsCleared`.
+        await toastsCleared(page);
 
         await edit();
         dialog = page.getByRole('dialog', { name: 'Edit Article' });

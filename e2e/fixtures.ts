@@ -201,3 +201,29 @@ export function escapeRegExp(value: string): string {
 export function toast(page: Page, text: string | RegExp) {
     return page.getByRole('status').filter({ hasText: text }).last();
 }
+
+/**
+ * Waits for every toast to clear.
+ *
+ * A toast is not a phase barrier, and it looks like one. A test that
+ * does the same thing twice asserts the same toast text twice, and the
+ * second assertion is satisfied *immediately by the first toast* — they
+ * are identical strings and `react-hot-toast` holds a success for two
+ * seconds. The test then reads the write log before the second write
+ * has landed and sees the first one's values.
+ *
+ * That is what made the ward cascade fail two runs in three: measured,
+ * the first "Location updated" was still on screen, the profile read
+ * `Agwatashi` at the moment the assertion passed and `New Layout` three
+ * seconds later. The app was right; the test raced it. Whether it
+ * passed depended only on how fast the machine got through the first
+ * half, which is why it looked like a flake.
+ *
+ * So: between two phases that raise the same toast, wait for the first
+ * to go. Prefer also asserting something durable — a row's text, the
+ * write log — because that is the thing under test; this only stops the
+ * previous phase answering for the next one.
+ */
+export async function toastsCleared(page: Page) {
+    await expect(page.getByRole('status')).toHaveCount(0, { timeout: 10_000 });
+}
