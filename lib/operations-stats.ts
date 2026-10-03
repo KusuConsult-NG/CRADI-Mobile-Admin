@@ -1,4 +1,4 @@
-import { getSupabase } from '@/lib/supabase';
+import { countRows, listRows, Query } from '@/lib/data';
 import { TABLES } from '@/lib/constants';
 
 /**
@@ -60,9 +60,9 @@ export function median(values: number[]): number | null {
 
 /** Rows as the flow query returns them. */
 export interface FlowRow {
-    submitted_at: string | null;
-    approved_at: string | null;
-    rejected_at: string | null;
+    submittedAt: string | null;
+    approvedAt: string | null;
+    rejectedAt: string | null;
 }
 
 /**
@@ -85,9 +85,9 @@ export function buildFlow(rows: FlowRow[], now: number, weeks = FLOW_WEEKS): Wee
         if (p) p[field] += 1;
     };
     for (const r of rows) {
-        bump(r.submitted_at, 'submitted');
-        // A report is decided once; approved_at wins if somehow both are set.
-        bump(r.approved_at ?? r.rejected_at, 'decided');
+        bump(r.submittedAt, 'submitted');
+        // A report is decided once; approvedAt wins if somehow both are set.
+        bump(r.approvedAt ?? r.rejectedAt, 'decided');
     }
     return [...points.values()];
 }
@@ -96,9 +96,9 @@ export function buildFlow(rows: FlowRow[], now: number, weeks = FLOW_WEEKS): Wee
 export function decisionHours(rows: FlowRow[]): number | null {
     const spans: number[] = [];
     for (const r of rows) {
-        const decided = r.approved_at ?? r.rejected_at;
-        if (!r.submitted_at || !decided) continue;
-        const a = Date.parse(r.submitted_at);
+        const decided = r.approvedAt ?? r.rejectedAt;
+        if (!r.submittedAt || !decided) continue;
+        const a = Date.parse(r.submittedAt);
         const b = Date.parse(decided);
         if (Number.isNaN(a) || Number.isNaN(b) || b < a) continue;
         spans.push((b - a) / HOUR);
@@ -106,17 +106,7 @@ export function decisionHours(rows: FlowRow[]): number | null {
     return median(spans);
 }
 
-async function countReports(
-    apply: (q: ReturnType<typeof reportsQuery>) => ReturnType<typeof reportsQuery>,
-): Promise<number> {
-    const { count, error } = await apply(reportsQuery());
-    if (error) throw error;
-    return count ?? 0;
-}
-
-function reportsQuery() {
-    return getSupabase().from(TABLES.REPORTS).select('*', { count: 'exact', head: true });
-}
+const countReports = (queries: string[]) => countRows(TABLES.REPORTS, queries);
 
 /**
  * Loads every figure the panel needs. Each query is settled independently so a
@@ -126,7 +116,7 @@ function reportsQuery() {
 /**
  * Rejects if `work` has not settled within `ms`.
  *
- * Promise.allSettled waits for every query, and the browser Supabase client
+ * Promise.allSettled waits for every query, and the browser Appwrite client
  * sets no timeout — so one request that hangs rather than failing leaves the
  * panel loading indefinitely, which reads as "the section isn't there". A
  * bounded wait turns that into a visible error.
@@ -142,41 +132,62 @@ function withDeadline<T>(work: Promise<T>, ms: number, what: string): Promise<T>
 
 export const LOAD_TIMEOUT_MS = 15_000;
 
+/**
+ * Most rows the flow query will read.
+ *
+ * Appwrite's own cap is 5,000 per page; PostgREST had no limit here and the
+ * query asked for none. Eight weeks of reports is far below this, and
+ * `degraded` does not cover a truncated page — so if it is ever reached the
+ * numbers are quietly low rather than visibly wrong, which is the argument
+ * for keeping it generous.
+ */
+export const FLOW_ROW_LIMIT = 5000;
+
 export async function loadOperationsStats(now = Date.now()): Promise<OperationsStats> {
     const iso = (ms: number) => new Date(ms).toISOString();
     const windowStart = iso(weekStart(now) - (FLOW_WEEKS - 1) * 7 * DAY);
 
     const results = await withDeadline(
         Promise.allSettled([
-        countReports((q) => q.eq('status', 'pending').gte('submitted_at', iso(now - DAY))),
-        countReports((q) =>
-            q
-                .eq('status', 'pending')
-                .gte('submitted_at', iso(now - 3 * DAY))
-                .lt('submitted_at', iso(now - DAY)),
-        ),
-        countReports((q) =>
-            q
-                .eq('status', 'pending')
-                .gte('submitted_at', iso(now - 7 * DAY))
-                .lt('submitted_at', iso(now - 3 * DAY)),
-        ),
-        countReports((q) => q.eq('status', 'pending').lt('submitted_at', iso(now - 7 * DAY))),
-        countReports((q) => q.eq('status', 'pending').eq('escalated', true)),
-        getSupabase()
-            .from(TABLES.REPORTS)
-            .select('submitted_at')
-            .eq('status', 'pending')
-            .order('submitted_at', { ascending: true })
-            .limit(1),
-        getSupabase()
-            .from(TABLES.REPORTS)
-            .select('submitted_at,approved_at,rejected_at')
-            // Values are quoted: PostgREST splits `or` terms on dots, and an
-            // ISO timestamp carries one in its milliseconds.
-            .or(
-                `submitted_at.gte."${windowStart}",approved_at.gte."${windowStart}",rejected_at.gte."${windowStart}"`,
-            ),
+        countReports([
+            Query.equal('status', 'pending'),
+            Query.greaterThanEqual('submittedAt', iso(now - DAY)),
+        ]),
+        countReports([
+            Query.equal('status', 'pending'),
+            Query.greaterThanEqual('submittedAt', iso(now - 3 * DAY)),
+            Query.lessThan('submittedAt', iso(now - DAY)),
+        ]),
+        countReports([
+            Query.equal('status', 'pending'),
+            Query.greaterThanEqual('submittedAt', iso(now - 7 * DAY)),
+            Query.lessThan('submittedAt', iso(now - 3 * DAY)),
+        ]),
+        countReports([
+            Query.equal('status', 'pending'),
+            Query.lessThan('submittedAt', iso(now - 7 * DAY)),
+        ]),
+        countReports([Query.equal('status', 'pending'), Query.equal('escalated', true)]),
+        listRows<{ submittedAt: string | null }>(TABLES.REPORTS, [
+            Query.equal('status', 'pending'),
+            Query.orderAsc('submittedAt'),
+            Query.limit(1),
+            Query.select(['submittedAt']),
+        ]),
+        listRows<FlowRow>(TABLES.REPORTS, [
+            // Submitted in the window, or decided in it: a report submitted
+            // before the window but decided inside it is exactly what the
+            // two lines exist to compare.
+            Query.or([
+                Query.greaterThanEqual('submittedAt', windowStart),
+                Query.greaterThanEqual('approvedAt', windowStart),
+                Query.greaterThanEqual('rejectedAt', windowStart),
+            ]),
+            Query.select(['submittedAt', 'approvedAt', 'rejectedAt']),
+            // Appwrite pages at 25 rows unless told otherwise, and a silently
+            // truncated window would quietly understate the whole panel.
+            Query.limit(FLOW_ROW_LIMIT),
+        ]),
         ]),
         LOAD_TIMEOUT_MS,
         'Loading the operations figures',
@@ -202,8 +213,8 @@ export async function loadOperationsStats(now = Date.now()): Promise<OperationsS
     let oldestPendingDays: number | null = null;
     const oldest = results[5];
     if (oldest.status === 'fulfilled') {
-        const rows = (oldest.value as { data: { submitted_at: string }[] | null }).data;
-        const at = rows?.[0]?.submitted_at;
+        const { rows } = oldest.value as { rows: { submittedAt: string | null }[] };
+        const at = rows[0]?.submittedAt;
         if (at) {
             const t = Date.parse(at);
             if (!Number.isNaN(t)) oldestPendingDays = Math.max(0, Math.floor((now - t) / DAY));
@@ -216,7 +227,7 @@ export async function loadOperationsStats(now = Date.now()): Promise<OperationsS
     let medianDecisionHours: number | null = null;
     const flow = results[6];
     if (flow.status === 'fulfilled') {
-        const rows = (flow.value as { data: FlowRow[] | null }).data ?? [];
+        const { rows } = flow.value as { rows: FlowRow[] };
         weeks = buildFlow(rows, now);
         medianDecisionHours = decisionHours(rows);
     } else {

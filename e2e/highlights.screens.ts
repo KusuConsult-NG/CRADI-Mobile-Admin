@@ -4,8 +4,8 @@
  *
  *   npx playwright test -c e2e/highlights.config.ts
  *
- * It uses the same in-memory mock as the e2e suite (e2e/mock-supabase.mjs);
- * no real Supabase project is ever contacted. It is not part of
+ * It uses the same in-memory mock as the e2e suite (e2e/mock-appwrite.mjs);
+ * no real Appwrite project is ever contacted. It is not part of
  * `npm run test:e2e` — that config only matches `*.spec.ts`.
  */
 import fs from 'node:fs';
@@ -55,8 +55,9 @@ test('admin panel screens', async ({ page }) => {
         });
     await page.route('https://images.example/**', placeholder);
     // The other seeded photo is a Storage object path; the mock has no object
-    // store behind /storage/v1/object/public, so stand in for it as well.
-    await page.route('**/storage/v1/object/public/**', placeholder);
+    // store behind /storage/buckets/<id>/files/<id>/view, so stand in for
+    // it as well.
+    await page.route('**/storage/buckets/**', placeholder);
 
     // 01 — login
     await page.goto('/login');

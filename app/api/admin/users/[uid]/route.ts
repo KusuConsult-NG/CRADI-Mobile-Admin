@@ -1,16 +1,18 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import type { SupabaseClient, User } from '@supabase/supabase-js';
-import { jsonError, requireAdmin } from '@/lib/supabase-admin';
+import { Query } from 'node-appwrite';
+import { type AdminClients, DATABASE_ID, jsonError, requireAdmin } from '@/lib/appwrite-server';
 import { isUserRole, TABLES, type UserRole } from '@/lib/constants';
-import { isAuthUserConfirmed, isNotFound, UUID_RE } from '@/lib/admin-users';
+import { accountLabels, isAuthUserConfirmed, isNotFound, LABEL_FIELDS, USER_ID_RE } from '@/lib/admin-users';
 import { isLga } from '@/lib/lgas';
 import { isLgaInState } from '@/lib/wards';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-// Effectively permanent ban (100 years), as used for blocked accounts.
-const BAN_DURATION = '876000h';
+// Appwrite has no ban duration: an account is active or it is not, and
+// `status: false` refuses every sign-in until it is set back.
+const BLOCKED = false;
+const ACTIVE = true;
 
 type RouteContext = { params: Promise<{ uid: string }> };
 
@@ -85,65 +87,133 @@ function parsePatchBody(value: unknown): PatchBody | null {
  * admin reviewed. Returns 'ok', 'not_found' or 'changed'.
  */
 async function pinnedProfileUpdate(
-    admin: SupabaseClient,
+    admin: AdminClients,
     uid: string,
     update: Record<string, unknown>,
     expected: Expected,
     extra?: Record<string, unknown>,
 ): Promise<'ok' | 'not_found' | 'changed'> {
-    let query = admin.from(TABLES.PROFILES).update(update).eq('id', uid);
     const pins: Record<string, unknown> = { ...expected, ...extra };
-    for (const [column, value] of Object.entries(pins)) {
-        query = value === null ? query.is(column, null) : query.eq(column, value);
+    const queries = [
+        Query.equal('$id', uid),
+        ...Object.entries(pins).map(([column, value]) =>
+            value === null ? Query.isNull(column) : Query.equal(column, value as string),
+        ),
+    ];
+
+    // `updateRows` applies the update only to the rows the queries match, in
+    // one call — the atomic compare-and-set the Postgres `WHERE` clause gave
+    // us, and the reason this is not a read-then-write.
+    //
+    // The queries belong in the BODY. Passed as `?queries[]=` they are
+    // silently ignored and **every row in the table is updated** — measured
+    // on 1.9.6, and the SDK puts them in the body for us.
+    const result = await admin.tables.updateRows({
+        databaseId: DATABASE_ID(),
+        tableId: TABLES.PROFILES,
+        data: update,
+        queries,
+    });
+    if (result.total > 0) return 'ok';
+
+    // Nothing matched: either the row is gone, or a pinned value moved.
+    try {
+        await admin.tables.getRow({
+            databaseId: DATABASE_ID(),
+            tableId: TABLES.PROFILES,
+            rowId: uid,
+        });
+        return 'changed';
+    } catch (error) {
+        if (isNotFound(error)) return 'not_found';
+        throw error;
     }
-    const { data, error } = await query.select('id');
-    if (error) throw error;
-    if (data && data.length > 0) return 'ok';
-
-    const { data: exists, error: existsError } = await admin
-        .from(TABLES.PROFILES)
-        .select('id')
-        .eq('id', uid)
-        .maybeSingle();
-    if (existsError) throw existsError;
-    return exists ? 'changed' : 'not_found';
 }
 
-async function setDisabledFlag(admin: SupabaseClient, uid: string, disabled: boolean): Promise<boolean> {
-    const { data, error } = await admin
-        .from(TABLES.PROFILES)
-        .update({ is_disabled: disabled })
-        .eq('id', uid)
-        .select('id');
-    if (error) throw error;
-    return !!data && data.length > 0;
+async function setDisabledFlag(admin: AdminClients, uid: string, disabled: boolean): Promise<boolean> {
+    try {
+        await admin.tables.updateRow({
+            databaseId: DATABASE_ID(),
+            tableId: TABLES.PROFILES,
+            rowId: uid,
+            data: { isDisabled: disabled },
+        });
+        return true;
+    } catch (error) {
+        if (isNotFound(error)) return false;
+        throw error;
+    }
 }
+
+/**
+ * Puts the account's labels back in step with the profile row.
+ *
+ * This route writes `profiles` with the API key, which bypasses the
+ * `write` Function and therefore its own label sync. Without this, every
+ * approval and role change made in the panel updated the row and left the
+ * account unable to read what the new role grants — and Appwrite reports
+ * that as `200 {"total": 0}`, so the user saw an empty panel rather than
+ * an error. Measured against a live 1.9.6: an admin whose account had no
+ * `admin` label read 0 of 9 profiles and 0 of 15 reports.
+ *
+ * Never fatal: the row is already written, and answering with a failure
+ * would describe a change that happened as one that did not. It is logged
+ * and reported in the response instead, so the panel can say so.
+ */
+async function syncAccountLabels(
+    admin: AdminClients,
+    uid: string,
+    update: Record<string, unknown>,
+): Promise<boolean> {
+    if (!LABEL_FIELDS.some((field) => field in update)) return true;
+    try {
+        const row = await admin.tables.getRow({
+            databaseId: DATABASE_ID(),
+            tableId: TABLES.PROFILES,
+            rowId: uid,
+        });
+        await admin.users.updateLabels({ userId: uid, labels: accountLabels(row as Record<string, unknown>) });
+        return true;
+    } catch (error) {
+        console.error('[api/admin/users] labels not synced for', uid, error);
+        return false;
+    }
+}
+
+const LABELS_MESSAGE =
+    'Saved, but this account\'s permissions could not be updated — they may see an empty page until it is retried.';
 
 const CHANGED_MESSAGE = 'User details changed since you loaded them — reload and review again.';
 
-/** A database trigger refusal (raise ... using errcode = '42501'), e.g. approving an unconfirmed account. */
-function dbRefusal(error: unknown): string | null {
-    if (typeof error !== 'object' || error === null) return null;
-    const e = error as { code?: unknown; message?: unknown };
-    return e.code === '42501' && typeof e.message === 'string' && e.message ? e.message : null;
-}
-
-function pinnedResponse(result: 'ok' | 'not_found' | 'changed') {
+function pinnedResponse(result: 'ok' | 'not_found' | 'changed', labelsSynced = true) {
     if (result === 'not_found') return jsonError('User not found', 404);
     if (result === 'changed') return jsonError(CHANGED_MESSAGE, 409);
+    if (!labelsSynced) return NextResponse.json({ success: true, warning: LABELS_MESSAGE });
     return NextResponse.json({ success: true });
+}
+
+/** Applies the pinned update, then brings the account's labels with it. */
+async function pinnedProfileWrite(
+    admin: AdminClients,
+    uid: string,
+    update: Record<string, unknown>,
+    expected: Expected,
+) {
+    const result = await pinnedProfileUpdate(admin, uid, update, expected);
+    if (result !== 'ok') return pinnedResponse(result);
+    return pinnedResponse(result, await syncAccountLabels(admin, uid, update));
 }
 
 /**
  * Admin-only user operations. All user mutations go through this route so the
- * profile row and the Supabase Auth account stay in sync:
- *  - { approve: true, expected } → profiles.is_approved = true (+ is_verified). Refused unless the
+ * profile row and the Appwrite account stay in sync:
+ *  - { approve: true, expected } → profiles.isApproved = true (+ isVerified). Refused unless the
  *                                  Auth account's email or phone is already confirmed; this route
  *                                  never confirms an email itself (that would let anyone who signs
  *                                  up with somebody else's address take it over once approved).
- *  - { approve: false, expected } → profiles.is_approved = false (revoke approval; access is lost until
+ *  - { approve: false, expected } → profiles.isApproved = false (revoke approval; access is lost until
  *                                  approved again)
- *  - { disabled: boolean }       → profiles.is_disabled and ban / unban the Auth account (the backend
+ *  - { disabled: boolean }       → profiles.isDisabled and block / unblock the account (the backend
  *                                  also syncs the ban from the flag; both are idempotent)
  *  - { role, expected }          → profiles.role
  *  - { location, expected }      → profiles.state / lga / ward (lga must be a known LGA of state)
@@ -155,7 +225,7 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
     const { admin, callerId } = check;
 
     const { uid } = await ctx.params;
-    if (!UUID_RE.test(uid)) return jsonError('Invalid user id', 400);
+    if (!USER_ID_RE.test(uid)) return jsonError('Invalid user id', 400);
 
     let body: PatchBody | null;
     try {
@@ -176,102 +246,135 @@ export async function PATCH(req: NextRequest, ctx: RouteContext) {
 
     try {
         if ('approve' in body && !body.approve) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { is_approved: false }, body.expected));
+            return pinnedProfileWrite(admin, uid, { isApproved: false }, body.expected);
         }
 
         if ('approve' in body) {
-            const { data, error } = await admin.auth.admin.getUserById(uid);
-            if (error) {
+            let account;
+            try {
+                account = await admin.users.get({ userId: uid });
+            } catch (error) {
                 if (isNotFound(error)) return jsonError('User not found', 404);
                 throw error;
             }
-            if (!isAuthUserConfirmed(data.user as User | null)) {
+            // The only check there is now. Postgres had a second one —
+            // the `profiles_guard_approval` trigger refused the write
+            // itself — and Appwrite has no triggers, so this route is
+            // the whole defence. It matters: approving an account whose
+            // address was never confirmed lets whoever signed up with
+            // somebody else's email take it over.
+            if (!isAuthUserConfirmed(account)) {
                 return jsonError(
                     'Email not confirmed: the user must confirm their email address (or phone) before they can be approved.',
                     409,
                 );
             }
-            try {
-                return pinnedResponse(
-                    await pinnedProfileUpdate(admin, uid, { is_approved: true, is_verified: true }, body.expected),
-                );
-            } catch (error) {
-                // The database refuses approving an unconfirmed account (profiles_guard_approval).
-                const refusal = dbRefusal(error);
-                if (refusal) return jsonError(refusal, 409);
-                throw error;
-            }
+            return pinnedProfileWrite(admin, uid, { isApproved: true, isVerified: true }, body.expected);
         }
 
         if ('role' in body) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { role: body.role }, body.expected));
+            return pinnedProfileWrite(admin, uid, { role: body.role }, body.expected);
         }
 
         if ('location' in body) {
-            return pinnedResponse(await pinnedProfileUpdate(admin, uid, { ...body.location }, body.expected));
+            return pinnedProfileWrite(admin, uid, { ...body.location }, body.expected);
         }
 
         if (body.disabled) {
-            // Block: flag the profile first (RLS denies access immediately), then ban sign-in.
+            // Block: flag the profile first (every collection rule reads it,
+            // so access stops immediately), then refuse sign-in.
             if (!(await setDisabledFlag(admin, uid, true))) return jsonError('User not found', 404);
-            const { error } = await admin.auth.admin.updateUserById(uid, { ban_duration: BAN_DURATION });
-            if (error) {
+            try {
+                await admin.users.updateStatus({ userId: uid, status: BLOCKED });
+            } catch (error) {
                 try {
                     await setDisabledFlag(admin, uid, false);
                 } catch (rollbackError) {
                     console.error('[api/admin/users] block rollback failed:', rollbackError);
                     return jsonError(
-                        'Could not ban the sign-in account, and restoring the profile failed; the profile is marked blocked but sign-in is not banned. Retry.',
+                        'Could not block the sign-in account, and restoring the profile failed; the profile is marked blocked but sign-in is not. Retry.',
                         500,
                     );
                 }
                 if (isNotFound(error)) return jsonError('User not found', 404);
-                console.error('[api/admin/users] ban failed:', error);
-                return jsonError('Could not ban the sign-in account; the user was not blocked.', 502);
+                console.error('[api/admin/users] block failed:', error);
+                return jsonError('Could not block the sign-in account; the user was not blocked.', 502);
             }
-            return NextResponse.json({ success: true });
+            // A blocked account keeps no labels: the block can be lifted in
+            // the Appwrite console without touching the profile, and a
+            // leftover label would come back with it.
+            const synced = await syncAccountLabels(admin, uid, { isDisabled: true });
+            return NextResponse.json(synced ? { success: true } : { success: true, warning: LABELS_MESSAGE });
         }
 
-        // Unblock: lift the sign-in ban first, then clear the profile flag.
-        const { error: unbanError } = await admin.auth.admin.updateUserById(uid, { ban_duration: 'none' });
-        if (unbanError) {
-            if (isNotFound(unbanError)) return jsonError('User not found', 404);
-            console.error('[api/admin/users] unban failed:', unbanError);
-            return jsonError('Could not lift the sign-in ban; the user is still blocked.', 502);
+        // Unblock: let them sign in again first, then clear the profile flag.
+        try {
+            await admin.users.updateStatus({ userId: uid, status: ACTIVE });
+        } catch (error) {
+            if (isNotFound(error)) return jsonError('User not found', 404);
+            console.error('[api/admin/users] unblock failed:', error);
+            return jsonError('Could not lift the sign-in block; the user is still blocked.', 502);
         }
         try {
             if (!(await setDisabledFlag(admin, uid, false))) return jsonError('User not found', 404);
         } catch (flagError) {
             console.error('[api/admin/users] unblock profile update failed:', flagError);
-            // Re-apply the ban so the two stay consistent.
-            const { error: rebanError } = await admin.auth.admin.updateUserById(uid, { ban_duration: BAN_DURATION });
-            if (rebanError) console.error('[api/admin/users] re-ban after failed unblock failed:', rebanError);
+            // Re-apply the block so the two stay consistent.
+            try {
+                await admin.users.updateStatus({ userId: uid, status: BLOCKED });
+            } catch (reblockError) {
+                console.error('[api/admin/users] re-block after failed unblock failed:', reblockError);
+            }
             return jsonError('Could not update the profile; the user is still blocked.', 500);
         }
-        return NextResponse.json({ success: true });
+        const synced = await syncAccountLabels(admin, uid, { isDisabled: false });
+        return NextResponse.json(synced ? { success: true } : { success: true, warning: LABELS_MESSAGE });
     } catch (error) {
         console.error('[api/admin/users] PATCH failed:', error);
         return jsonError('Failed to update user', 500);
     }
 }
 
-/** Deletes the Supabase Auth account; the profile row is removed by ON DELETE CASCADE. */
+/**
+ * Deletes the account and its profile row.
+ *
+ * Postgres removed the profile by `ON DELETE CASCADE`. Appwrite has no
+ * foreign keys, so the row is deleted here — after the account, because an
+ * orphaned profile is visible and fixable while an account with no profile
+ * can sign in and reach nothing.
+ */
 export async function DELETE(req: NextRequest, ctx: RouteContext) {
     const check = await requireAdmin(req);
     if (!check.ok) return check.response;
     const { admin, callerId } = check;
 
     const { uid } = await ctx.params;
-    if (!UUID_RE.test(uid)) return jsonError('Invalid user id', 400);
+    if (!USER_ID_RE.test(uid)) return jsonError('Invalid user id', 400);
     if (uid === callerId) {
         return jsonError('You cannot delete your own admin account', 400);
     }
 
     try {
-        const { error } = await admin.auth.admin.deleteUser(uid);
-        if (error) {
+        try {
+            await admin.users.delete({ userId: uid });
+        } catch (error) {
             if (isNotFound(error)) return jsonError('User not found', 404);
             throw error;
+        }
+        try {
+            await admin.tables.deleteRow({
+                databaseId: DATABASE_ID(),
+                tableId: TABLES.PROFILES,
+                rowId: uid,
+            });
+        } catch (error) {
+            if (!isNotFound(error)) {
+                console.error('[api/admin/users] profile delete failed:', error);
+                return jsonError(
+                    'The sign-in account was deleted but its profile row was not; delete it again to clear the row.',
+                    500,
+                );
+            }
         }
         return NextResponse.json({ success: true });
     } catch (error) {

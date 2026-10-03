@@ -3,11 +3,11 @@ import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
 import { LOCATIONS } from '../lib/wards';
 
 type AuthorityRow = {
-    id: string;
+    $id: string;
     name: string;
     phone: string;
-    coverage_lga: string;
-    coverage_state: string;
+    coverageLga: string;
+    coverageState: string;
     organization: string | null;
 };
 
@@ -62,26 +62,32 @@ test.describe('authorities', () => {
         await expect(toast(page, 'Authority added')).toBeVisible();
         await expect(dialog).toBeHidden();
         await expect(row(page, 'Agatu Desk')).toContainText('+2348031234568');
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(post.body).toEqual({
+        const post = (await mock.writes({ collection: 'authorities', op: 'create' })).at(-1)!;
+        expect(post.data).toEqual({
             name: 'Agatu Desk',
             organization: 'SEMA Benue',
             phone: '+2348031234568',
-            coverage_lga: 'Agatu',
-            coverage_state: 'Benue',
+            coverageLga: 'Agatu',
+            coverageState: 'Benue',
         });
         // Duplicate check ran first: every contact of the (state, LGA), compared
         // after normalising the stored numbers too (not a raw phone=eq filter).
-        const dupCheck = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).find((r) =>
-            r.query.includes('coverage_lga=eq.Agatu'),
+        const dupCheck = (await mock.reads('authorities')).find((r) =>
+            decodeURIComponent(r.query).includes('"values":["Agatu"]'),
         );
         const dupQuery = decodeURIComponent(dupCheck!.query);
-        expect(dupQuery).toContain('select=id,phone');
-        expect(dupQuery).not.toContain('phone=eq.');
+        // Only the phone is read back ($id always comes with the row), and the
+        // numbers are compared in the client after normalising — a stored
+        // "0803 123 4568" is the same contact as "+2348031234568", which an
+        // equality query on `phone` would miss.
+        expect(dupQuery).toContain('{"method":"select","values":["phone"]}');
+        expect(dupQuery).not.toContain('"attribute":"phone"');
         // Scoped to the (state, LGA), not the LGA name: there are no
         // state-less contacts to match any more.
-        expect(dupQuery).toContain('coverage_state=eq.Benue');
-        expect(dupQuery).not.toContain('coverage_state.is.null');
+        // Per (state, LGA): the same desk may legitimately cover Obi in
+        // Benue and Obi in Nasarawa, so the check must name both.
+        expect(dupQuery).toContain('"attribute":"coverageState"');
+        expect(dupQuery).toContain('"values":["Benue"]');
         await expect(gaps(page).getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
     });
 
@@ -128,13 +134,13 @@ test.describe('authorities', () => {
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, '+2348031234567 is already listed for Ado, Benue.')).toBeVisible();
         await expect(dialog).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'authorities', op: 'create' })).toHaveLength(0);
     });
 
     test('a stored number in another spelling still counts as a duplicate', async ({ page, mock }) => {
         const ado = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Ado Emergency Desk')!;
         // Written before numbers were normalised.
-        await fetch(`${MOCK_URL}/__mock/table/authorities/${ado.id}`, {
+        await fetch(`${MOCK_URL}/__mock/table/authorities/${ado.$id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ phone: '0803 123 4567' }),
@@ -146,26 +152,28 @@ test.describe('authorities', () => {
         await dialog.getByLabel('Coverage LGA').selectOption('Ado');
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, '+2348031234567 is already listed for Ado, Benue.')).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'authorities', op: 'create' })).toHaveLength(0);
     });
 
-    test('coverage reads every row in 1000-row pages (PostgREST max-rows)', async ({ page, mock }) => {
-        // 1100 contacts: fillers for Makurdi, and the only Agatu contact sorted last by id.
-        const rows = Array.from({ length: 1099 }, (_, i) => ({
-            id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    test('coverage reads every row, a page at a time', async ({ page, mock }) => {
+        // 1100 contacts: fillers for Makurdi, and the only Agatu contact
+        // sorted last by id — a single truncated page would miss it and
+        // report Agatu as a gap.
+        const rows: Record<string, string>[] = Array.from({ length: 1099 }, (_, i) => ({
+            $id: `filler${String(i).padStart(14, '0')}`,
             name: `Filler ${i}`,
             phone: `+23480300${String(i).padStart(5, '0')}`,
-            coverage_lga: 'Makurdi',
-            coverage_state: 'Benue',
+            coverageLga: 'Makurdi',
+            coverageState: 'Benue',
         }));
         rows.push({
-            id: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+            $id: 'zzzzzzzzzzzzzzzzzzzz',
             name: 'Agatu Desk',
             phone: '+2348031110000',
-            coverage_lga: 'Agatu',
-            coverage_state: 'Benue',
+            coverageLga: 'Agatu',
+            coverageState: 'Benue',
         });
-        const res = await fetch(`${MOCK_URL}/rest/v1/authorities`, {
+        const res = await fetch(`${MOCK_URL}/__mock/table/authorities`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(rows),
@@ -179,13 +187,14 @@ test.describe('authorities', () => {
         await expect(panel.getByRole('button', { name: 'Agatu', exact: true })).toHaveCount(0);
         await expect(panel.getByRole('button', { name: 'Makurdi', exact: true })).toHaveCount(0);
 
-        const coverage = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).filter((r) =>
-            decodeURIComponent(r.query).startsWith('select=coverage_lga,coverage_state'),
+        const coverage = (await mock.reads('authorities')).filter((r) =>
+            decodeURIComponent(r.query).includes('"values":["coverageLga","coverageState"]'),
         );
-        const offsets = coverage.map((r) => new URLSearchParams(r.query).get('offset'));
+        const page_ = (r: { query: string }, key: string) =>
+            decodeURIComponent(r.query).match(new RegExp(`"method":"${key}","values":\\[(\\d+)\\]`))?.[1];
         // The last load (after the reload): pages at 0 and 1000, then a short page ends it.
-        expect(offsets.slice(-2)).toEqual(['0', '1000']);
-        for (const r of coverage) expect(new URLSearchParams(r.query).get('limit')).toBe('1000');
+        expect(coverage.slice(-2).map((r) => page_(r, 'offset'))).toEqual(['0', '1000']);
+        for (const r of coverage) expect(page_(r, 'limit')).toBe('1000');
     });
 
     test('edits an authority', async ({ page, mock }) => {
@@ -199,23 +208,18 @@ test.describe('authorities', () => {
         await expect(toast(page, 'Authority updated')).toBeVisible();
         await expect(row(page, 'Ado Emergency Desk')).toContainText('+2348031234000');
 
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(patch.body).toEqual({
+        const patch = (await mock.writes({ collection: 'authorities', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({
             name: 'Ado Emergency Desk',
             organization: null,
             phone: '+2348031234000',
-            coverage_lga: 'Ado',
-            coverage_state: 'Benue',
+            coverageLga: 'Ado',
+            coverageState: 'Benue',
         });
         await expect(row(page, 'Ado Emergency Desk').getByText('State not set')).toHaveCount(0);
         await expect(row(page, 'Ado Emergency Desk')).toContainText('Benue');
-        const id = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Ado Emergency Desk')!.id;
-        expect(patch.query).toContain(`id=eq.${id}`);
-        // The duplicate check excludes the row being edited.
-        const dupCheck = (await mock.requests({ method: 'GET', path: '/rest/v1/authorities' })).find((r) =>
-            decodeURIComponent(r.query).startsWith('select=id,phone'),
-        );
-        expect(dupCheck!.query).toContain(`id=neq.${id}`);
+        const id = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Ado Emergency Desk')!.$id;
+        expect(patch.documentId).toBe(id);
     });
 
     test('an authority with an unknown LGA must be given a listed LGA when edited', async ({ page }) => {
@@ -250,8 +254,12 @@ test.describe('authorities', () => {
         await select.selectOption('Nasarawa|Obi');
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, 'Authority added')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(post.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Nasarawa', phone: '+2348031110003' });
+        const post = (await mock.writes({ collection: 'authorities', op: 'create' })).at(-1)!;
+        expect(post.data).toMatchObject({
+            coverageLga: 'Obi',
+            coverageState: 'Nasarawa',
+            phone: '+2348031110003',
+        });
         await expect(row(page, 'Obi Nasarawa Desk')).toContainText('Nasarawa');
 
         // Only Nasarawa's Obi is covered now; Benue's Obi is still a gap.
@@ -268,8 +276,8 @@ test.describe('authorities', () => {
         await dialog2.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, 'Authority added')).toBeVisible();
         await expect(obiChips).toHaveCount(0);
-        const obi = (await mock.table<AuthorityRow>('authorities')).filter((a) => a.coverage_lga === 'Obi');
-        expect(obi.map((a) => a.coverage_state).sort()).toEqual(['Benue', 'Nasarawa']);
+        const obi = (await mock.table<AuthorityRow>('authorities')).filter((a) => a.coverageLga === 'Obi');
+        expect(obi.map((a) => a.coverageState).sort()).toEqual(['Benue', 'Nasarawa']);
 
         // The LGA filter tells them apart too.
         await page.getByLabel('Filter authorities by LGA').selectOption('Nasarawa|Obi');
@@ -326,16 +334,16 @@ test.describe('authorities', () => {
             await dialog.getByRole('button', { name: 'Add Authority' }).click();
             await expect(toast(page, message)).toBeVisible();
             await expect(dialog).toBeVisible();
-            expect(await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).toHaveLength(0);
+            expect(await mock.writes({ collection: 'authorities', op: 'create' })).toHaveLength(0);
         }
 
         // A real pair goes through, carrying the state.
         await select.selectOption('Nasarawa|Obi');
         await dialog.getByRole('button', { name: 'Add Authority' }).click();
         await expect(toast(page, 'Authority added')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(post.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Nasarawa' });
-        expect((await mock.table<AuthorityRow>('authorities')).every((a) => !!a.coverage_state)).toBe(true);
+        const post = (await mock.writes({ collection: 'authorities', op: 'create' })).at(-1)!;
+        expect(post.data).toMatchObject({ coverageLga: 'Obi', coverageState: 'Nasarawa' });
+        expect((await mock.table<AuthorityRow>('authorities')).every((a) => !!a.coverageState)).toBe(true);
     });
 
     test('a contact whose LGA is not in its state must be re-pointed before it can be saved', async ({ page, mock }) => {
@@ -343,10 +351,10 @@ test.describe('authorities', () => {
         // but if one arrives the form opens with nothing selected rather than
         // carrying a coverage it cannot name a state for.
         const old = (await mock.table<AuthorityRow>('authorities')).find((a) => a.name === 'Old Contact')!;
-        await fetch(`${MOCK_URL}/__mock/table/authorities/${old.id}`, {
+        await fetch(`${MOCK_URL}/__mock/table/authorities/${old.$id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ coverage_lga: 'Obi', coverage_state: 'Plateau', phone: '08031110009' }),
+            body: JSON.stringify({ coverageLga: 'Obi', coverageState: 'Plateau', phone: '08031110009' }),
         });
         await page.reload();
         await expect(page.getByText('Showing 1–3 of 3 authorities')).toBeVisible();
@@ -360,13 +368,13 @@ test.describe('authorities', () => {
         await expect(select).toHaveValue('');
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Choose the LGA this contact covers.')).toBeVisible();
-        expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'authorities', op: 'update' })).toHaveLength(0);
 
         await select.selectOption('Benue|Obi');
         await dialog.getByRole('button', { name: 'Save Changes' }).click();
         await expect(toast(page, 'Authority updated')).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/authorities' })).at(-1)!;
-        expect(patch.body).toMatchObject({ coverage_lga: 'Obi', coverage_state: 'Benue' });
+        const patch = (await mock.writes({ collection: 'authorities', op: 'update' })).at(-1)!;
+        expect(patch.data).toMatchObject({ coverageLga: 'Obi', coverageState: 'Benue' });
         // Now only Benue's Obi is covered.
         const chip = gaps(page).getByRole('button', { name: 'Obi', exact: true });
         await expect(chip).toHaveCount(1);
@@ -381,7 +389,7 @@ test.describe('authorities', () => {
         await expect(toast(page, 'Authority deleted')).toBeVisible();
         await expect(row(page, 'Old Contact')).toHaveCount(0);
         await expect(page.getByText('Showing 1–2 of 2 authorities')).toBeVisible();
-        const del = await mock.requests({ method: 'DELETE', path: '/rest/v1/authorities' });
+        const del = await mock.writes({ collection: 'authorities', op: 'delete' });
         expect(del).toHaveLength(1);
         expect((await mock.table<AuthorityRow>('authorities')).map((a) => a.name)).not.toContain('Old Contact');
     });

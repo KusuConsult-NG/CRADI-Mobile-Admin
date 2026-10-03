@@ -3,7 +3,8 @@
 import { useState, useEffect } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase, publicImageUrl } from '@/lib/supabase';
+import { publicImageUrl } from '@/lib/appwrite';
+import { BackendError, callOperation, listRows, Query, updateRow } from '@/lib/data';
 import {
     TABLES,
     REPORT_IMAGES_BUCKET,
@@ -22,15 +23,25 @@ import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 20;
 
-/** Postgres error codes whose message is written for people: insufficient_privilege, invalid_parameter_value, no_data_found. */
-const SERVER_MESSAGE_CODES = new Set(['42501', '22023', 'P0002']);
+/**
+ * Refusals whose message the server wrote for a person to read: the caller
+ * is not allowed, the report is not in a state the operation accepts, or it
+ * is gone. Anything else gets the generic message, because an Appwrite
+ * internal error names internals.
+ */
+const SERVER_MESSAGE_STATUSES = new Set([400, 401, 403, 404, 409]);
+
+/** A refusal that means the card is out of date, so the list must reload. */
+function isStaleState(error: unknown): boolean {
+    return error instanceof BackendError && (error.status === 400 || error.status === 404 || error.status === 409);
+}
 
 type StatusFilter = 'all' | ReportStatus;
 
 /** Report `type` of a peer verification request (as opposed to a direct hazard report). */
 const VERIFICATION_REQUEST_TYPE = 'verification_request';
 
-/** Stored hazard_type values matched by the hazard filter: the canonical name plus legacy spellings. */
+/** Stored hazardType values matched by the hazard filter: the canonical name plus legacy spellings. */
 function hazardFilterValues(name: string): string[] {
     const hazard = REPORT_HAZARDS.find((h) => h.name === name);
     return hazard ? Array.from(new Set([hazard.name, ...hazard.aliases])) : [name];
@@ -57,65 +68,68 @@ interface Report {
 
 interface ReportRow {
     id: string;
-    hazard_type: string | null;
+    hazardType: string | null;
     type: string | null;
     severity: string | null;
     description: string | null;
-    location_details: string | null;
+    locationDetails: string | null;
     location: string | null;
     address: string | null;
     ward: string | null;
     lga: string | null;
     state: string | null;
     status: string | null;
-    reporter_name: string | null;
-    submitted_at: string | null;
-    created_at: string | null;
-    image_urls: string[] | null;
-    is_alert: boolean | null;
+    reporterName: string | null;
+    submittedAt: string | null;
+    createdAt: string | null;
+    imageUrls: string[] | null;
+    isAlert: boolean | null;
     escalated: boolean | null;
-    verification_count: number | null;
+    verificationCount: number | null;
 }
 
-const REPORT_COLUMNS =
-    'id, hazard_type, type, severity, description, location_details, location, address, ward, lga, state, status, reporter_name, submitted_at, created_at, image_urls, is_alert, escalated, verification_count';
+const REPORT_COLUMNS = [
+    'hazardType', 'type', 'severity', 'description', 'locationDetails', 'location',
+    'address', 'ward', 'lga', 'state', 'status', 'reporterName', 'submittedAt',
+    'createdAt', 'imageUrls', 'isAlert', 'escalated', 'verificationCount',
+];
 
 function str(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
 }
 
 function toReport(row: ReportRow): Report {
-    const imageUrls = (Array.isArray(row.image_urls) ? row.image_urls : [])
+    const imageUrls = (Array.isArray(row.imageUrls) ? row.imageUrls : [])
         .map((v) => (typeof v === 'string' ? publicImageUrl(REPORT_IMAGES_BUCKET, v) : null))
         .filter((u): u is string => !!u);
     const isVerificationRequest = row.type === VERIFICATION_REQUEST_TYPE;
     // Older rows kept the hazard in `type`; a verification request's type is not a hazard.
-    const rawHazard = str(row.hazard_type) ?? (isVerificationRequest ? undefined : str(row.type));
+    const rawHazard = str(row.hazardType) ?? (isVerificationRequest ? undefined : str(row.type));
     return {
         id: row.id,
         hazardType: rawHazard ? canonicalHazardName(rawHazard) : 'Unknown hazard',
         severity: str(row.severity),
         description: str(row.description),
-        location: str(row.location_details) ?? str(row.location) ?? str(row.address),
+        location: str(row.locationDetails) ?? str(row.location) ?? str(row.address),
         ward: str(row.ward),
         lga: str(row.lga),
         state: str(row.state),
         status: str(row.status) ?? 'pending',
-        reporterName: str(row.reporter_name),
-        submittedAt: toDate(row.submitted_at ?? row.created_at),
+        reporterName: str(row.reporterName),
+        submittedAt: toDate(row.submittedAt ?? row.createdAt),
         imageUrls,
-        isAlert: row.is_alert === true,
+        isAlert: row.isAlert === true,
         escalated: row.escalated === true,
-        verificationCount: typeof row.verification_count === 'number' ? row.verification_count : 0,
+        verificationCount: typeof row.verificationCount === 'number' ? row.verificationCount : 0,
         isVerificationRequest,
     };
 }
 
 /** Timestamp columns stamped when an admin moves a report into a status. */
 const STATUS_TIMESTAMP: Partial<Record<ReportStatus, string>> = {
-    approved: 'approved_at',
-    rejected: 'rejected_at',
-    verified: 'verified_at',
+    approved: 'approvedAt',
+    rejected: 'rejectedAt',
+    verified: 'verifiedAt',
 };
 
 const getSeverityColor = (severity?: string) => {
@@ -204,38 +218,51 @@ export default function ReportsPage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            let query = getSupabase()
-                .from(TABLES.REPORTS)
-                .select(REPORT_COLUMNS, { count: 'exact' })
-                .order('submitted_at', { ascending: false })
-                .order('id', { ascending: false })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-            if (statusFilter !== 'all') query = query.eq('status', statusFilter);
-            if (hazardFilter !== 'all') query = query.in('hazard_type', hazardFilterValues(hazardFilter));
+            const queries = [
+                Query.orderDesc('submittedAt'),
+                Query.orderDesc('$id'),
+                Query.limit(PAGE_SIZE),
+                Query.offset(page * PAGE_SIZE),
+                Query.select([...REPORT_COLUMNS]),
+            ];
+            if (statusFilter !== 'all') queries.push(Query.equal('status', statusFilter));
+            if (hazardFilter !== 'all') {
+                queries.push(Query.equal('hazardType', hazardFilterValues(hazardFilter)));
+            }
             if (searchQuery) {
-                const p = `*${searchQuery}*`;
-                query = query.or(
-                    `hazard_type.ilike.${p},description.ilike.${p},location_details.ilike.${p},ward.ilike.${p},lga.ilike.${p},state.ilike.${p},reporter_name.ilike.${p}`,
+                queries.push(
+                    Query.or([
+                        Query.contains('hazardType', searchQuery),
+                        Query.contains('description', searchQuery),
+                        Query.contains('locationDetails', searchQuery),
+                        Query.contains('ward', searchQuery),
+                        Query.contains('lga', searchQuery),
+                        Query.contains('state', searchQuery),
+                        Query.contains('reporterName', searchQuery),
+                    ]),
                 );
             }
-            const { data, count, error } = await query;
-            if (cancelled) return;
-            if (error) {
+            let loaded: { rows: ReportRow[]; total: number };
+            try {
+                loaded = await listRows<ReportRow>(TABLES.REPORTS, queries);
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching reports:', error);
                 toast.error('Failed to load reports.');
                 setReports([]);
                 setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as ReportRow[];
-                if (rows.length === 0 && page > 0) {
-                    // Past the last page (rows changed elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
-                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
-                    return;
-                }
-                setReports(rows.map(toReport));
-                setTotalCount(count ?? null);
+                setLoading(false);
+                return;
             }
+            if (cancelled) return;
+            if (loaded.rows.length === 0 && page > 0) {
+                // Past the last page (rows changed elsewhere): step back.
+                const lastPage = loaded.total ? Math.ceil(loaded.total / PAGE_SIZE) - 1 : page - 1;
+                setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                return;
+            }
+            setReports(loaded.rows.map(toReport));
+            setTotalCount(loaded.total);
             setLoading(false);
         }
         void load();
@@ -268,30 +295,28 @@ export default function ReportsPage() {
             if (newStatus === 'pending') {
                 // Reopening must also clear peer votes and reschedule escalation,
                 // otherwise the report can never be verified again.
-                const { error } = await getSupabase().rpc('reopen_report', { p_report_id: report.id });
-                if (error) throw error;
+                await callOperation('reopen_report', { p_report_id: report.id });
             } else {
-                const update: Record<string, unknown> = { status: newStatus, updated_by: user.id };
+                const update: Record<string, unknown> = { status: newStatus, updatedBy: user.id };
                 const stampColumn = STATUS_TIMESTAMP[newStatus];
                 if (stampColumn) update[stampColumn] = new Date().toISOString();
-                if (newStatus === 'rejected') update.rejection_reason = reason || null;
+                if (newStatus === 'rejected') update.rejectionReason = reason || null;
 
                 // Optimistic lock: only apply the decision to the status this
                 // card showed. If someone else decided (or reopened) the report
-                // meanwhile, no row matches and nothing is overwritten.
-                const { data, error } = await getSupabase()
-                    .from(TABLES.REPORTS)
-                    .update(update)
-                    .eq('id', report.id)
-                    .eq('status', report.status)
-                    .select('id');
-                if (error) throw error;
-                if (!data || data.length === 0) {
-                    // No row back: the status changed since the list loaded (RLS
-                    // would also filter silently, but staff may update reports).
-                    toast.error('This report changed since you loaded it — reloading');
-                    setReloadKey((k) => k + 1);
-                    return;
+                // meanwhile, the `write` Function matches no row and answers
+                // 409 rather than overwriting their decision.
+                try {
+                    await updateRow(TABLES.REPORTS, report.id, update, {
+                        expect: { status: report.status },
+                    });
+                } catch (error) {
+                    if (error instanceof BackendError && error.status === 409) {
+                        toast.error('This report changed since you loaded it — reloading');
+                        setReloadKey((k) => k + 1);
+                        return;
+                    }
+                    throw error;
                 }
             }
 
@@ -306,17 +331,14 @@ export default function ReportsPage() {
             }
         } catch (error) {
             console.error('Error updating report:', error);
-            const code = typeof error === 'object' && error && 'code' in error ? String(error.code) : '';
-            const message = error instanceof Error || (typeof error === 'object' && error && 'message' in error)
-                ? String((error as { message: unknown }).message)
-                : '';
-            // Database errors with a readable reason: permission (e.g. own
-            // report), invalid state (e.g. "Report is already pending"), not
-            // found; thrown Errors carry their own message.
-            const readable = SERVER_MESSAGE_CODES.has(code) || error instanceof Error;
+            const message = error instanceof Error ? error.message : '';
+            // A Function refusal carries a reason written for people (e.g.
+            // "That report is already pending"); a transport or server fault
+            // does not, so it gets the generic message.
+            const readable = !(error instanceof BackendError) || SERVER_MESSAGE_STATUSES.has(error.status);
             toast.error(readable && message ? message : 'Failed to update report');
-            // Invalid state means the list is out of date.
-            if (code === '22023') setReloadKey((k) => k + 1);
+            // The server refused because the row is not what this card shows.
+            if (isStaleState(error)) setReloadKey((k) => k + 1);
         } finally {
             setUpdatingId(null);
         }
@@ -496,7 +518,7 @@ export default function ReportsPage() {
                                                                 rel="noopener noreferrer"
                                                                 className="block w-20 h-20 rounded-lg overflow-hidden border border-gray-200 hover:opacity-90 transition-opacity"
                                                             >
-                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Supabase Storage URLs */}
+                                                                {/* eslint-disable-next-line @next/next/no-img-element -- remote Appwrite Storage URLs */}
                                                                 <img
                                                                     src={url}
                                                                     alt={`${report.hazardType} report image ${i + 1}`}

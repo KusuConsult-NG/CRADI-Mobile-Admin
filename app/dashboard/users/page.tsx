@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { listRows, Query } from '@/lib/data';
 import {
     TABLES,
     USER_ROLES,
@@ -62,14 +62,15 @@ interface ProfileRow {
     state: string | null;
     lga: string | null;
     ward: string | null;
-    is_verified: boolean | null;
-    is_approved: boolean | null;
-    is_disabled: boolean | null;
-    created_at: string | null;
+    isVerified: boolean | null;
+    isApproved: boolean | null;
+    isDisabled: boolean | null;
+    createdAt: string | null;
 }
 
 const PROFILE_COLUMNS =
-    'id, name, email, phone, role, address, state, lga, ward, is_verified, is_approved, is_disabled, created_at';
+    ['name', 'email', 'phone', 'role', 'address', 'state', 'lga', 'ward',
+     'isVerified', 'isApproved', 'isDisabled', 'createdAt'];
 
 interface ConfirmState {
     isOpen: boolean;
@@ -138,10 +139,10 @@ function toAppUser(row: ProfileRow): AppUser {
         state: str(row.state),
         lga: str(row.lga),
         ward: str(row.ward),
-        isVerified: row.is_verified === true,
-        isApproved: row.is_approved === true,
-        isDisabled: row.is_disabled === true,
-        createdAt: toDate(row.created_at),
+        isVerified: row.isVerified === true,
+        isApproved: row.isApproved === true,
+        isDisabled: row.isDisabled === true,
+        createdAt: toDate(row.createdAt),
         loaded: { role: row.role, lga: row.lga, ward: row.ward },
     };
 }
@@ -220,38 +221,51 @@ export default function UsersPage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            let query = getSupabase()
-                .from(TABLES.PROFILES)
-                .select(PROFILE_COLUMNS, { count: 'exact' })
-                .order('created_at', { ascending: false })
-                .order('id', { ascending: false })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
-            if (statusFilter === 'pending') query = query.eq('is_approved', false).eq('is_disabled', false);
-            if (statusFilter === 'approved') query = query.eq('is_approved', true).eq('is_disabled', false);
-            if (statusFilter === 'blocked') query = query.eq('is_disabled', true);
-            if (searchQuery) {
-                const pattern = `*${searchQuery}*`;
-                query = query.or(`name.ilike.${pattern},email.ilike.${pattern},phone.ilike.${pattern}`);
+            const queries = [
+                Query.orderDesc('createdAt'),
+                Query.orderDesc('$id'),
+                Query.limit(PAGE_SIZE),
+                Query.offset(page * PAGE_SIZE),
+                Query.select([...PROFILE_COLUMNS]),
+            ];
+            if (statusFilter === 'pending') {
+                queries.push(Query.equal('isApproved', false), Query.equal('isDisabled', false));
             }
-            const { data, count, error } = await query;
-            if (cancelled) return;
-            if (error) {
+            if (statusFilter === 'approved') {
+                queries.push(Query.equal('isApproved', true), Query.equal('isDisabled', false));
+            }
+            if (statusFilter === 'blocked') queries.push(Query.equal('isDisabled', true));
+            if (searchQuery) {
+                queries.push(
+                    Query.or([
+                        Query.contains('name', searchQuery),
+                        Query.contains('email', searchQuery),
+                        Query.contains('phone', searchQuery),
+                    ]),
+                );
+            }
+            let loaded: { rows: (ProfileRow & { id: string })[]; total: number };
+            try {
+                loaded = await listRows<ProfileRow>(TABLES.PROFILES, queries);
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching users:', error);
                 toast.error('Failed to load users.');
                 setUsers([]);
                 setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as ProfileRow[];
-                if (rows.length === 0 && page > 0) {
-                    // Past the last page (rows changed elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
-                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
-                    return;
-                }
-                setUsers(rows.map(toAppUser));
-                setTotalCount(count ?? null);
-                void loadConfirmation(rows.map((r) => r.id));
+                setLoading(false);
+                return;
             }
+            if (cancelled) return;
+            if (loaded.rows.length === 0 && page > 0) {
+                // Past the last page (rows changed elsewhere): step back.
+                const lastPage = loaded.total ? Math.ceil(loaded.total / PAGE_SIZE) - 1 : page - 1;
+                setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                return;
+            }
+            setUsers(loaded.rows.map(toAppUser));
+            setTotalCount(loaded.total);
+            void loadConfirmation(loaded.rows.map((r) => r.id));
             setLoading(false);
         }
         async function loadConfirmation(ids: string[]) {
@@ -302,8 +316,19 @@ export default function UsersPage() {
     }, [confirmBusy, confirmModal.onConfirm]);
 
     const userApi = useCallback(
-        (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }): Promise<unknown> =>
-            adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init),
+        async (id: string, init: { method: 'PATCH' | 'DELETE'; body?: unknown }): Promise<unknown> => {
+            const result = await adminApi(getAccessToken, `/api/admin/users/${encodeURIComponent(id)}`, init);
+            // The change landed, but something after it did not — today
+            // that is the account's labels, which decide what the user can
+            // read. Shown here rather than at every call site, and not as
+            // a failure, because the row did move.
+            const warning =
+                typeof result === 'object' && result !== null && 'warning' in result
+                    ? (result as { warning: unknown }).warning
+                    : null;
+            if (typeof warning === 'string' && warning) toast.error(warning, { duration: 8000 });
+            return result;
+        },
         [getAccessToken],
     );
 

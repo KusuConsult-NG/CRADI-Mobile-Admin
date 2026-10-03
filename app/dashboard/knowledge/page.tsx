@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from 'react';
 import { useAuth } from '@/lib/auth-context';
-import { getSupabase } from '@/lib/supabase';
+import { createRow, deleteRow, listRows, Query, updateRow } from '@/lib/data';
+import { ID } from 'appwrite';
 import {
     TABLES,
     KNOWLEDGE_CATEGORIES,
@@ -17,6 +18,11 @@ import { BookOpen, Loader2, Search, Plus, Trash2, Edit } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 const PAGE_SIZE = 24;
+
+// The column sizes in CRADI-mobile/infra/appwrite/columns.json: Appwrite
+// refuses a longer value outright, so the form must not offer one.
+const TITLE_MAX = 255;
+const SOURCE_MAX = 255;
 
 interface KnowledgeArticle {
     id: string;
@@ -35,13 +41,13 @@ interface KnowledgeRow {
     content: string | null;
     source: string | null;
     category: string | null;
-    hazard_type: string | null;
-    image_url: string | null;
-    updated_at: string | null;
-    created_at: string | null;
+    hazardType: string | null;
+    imageUrl: string | null;
+    updatedAt: string | null;
+    createdAt: string | null;
 }
 
-const KB_COLUMNS = 'id, title, content, source, category, hazard_type, image_url, updated_at, created_at';
+const KB_COLUMNS = ['title', 'content', 'source', 'category', 'hazardType', 'imageUrl', 'createdAt'];
 
 /** Dropdown value meaning "keep the article's stored category / hazard type". */
 const KEEP_STORED = '__stored__';
@@ -81,9 +87,9 @@ function toArticle(row: KnowledgeRow): KnowledgeArticle {
         content: str(row.content),
         source: str(row.source),
         category: str(row.category),
-        hazardType: str(row.hazard_type) || undefined,
-        imageUrl: str(row.image_url),
-        updatedAt: toDate(row.updated_at ?? row.created_at),
+        hazardType: str(row.hazardType) || undefined,
+        imageUrl: str(row.imageUrl),
+        updatedAt: toDate(row.updatedAt ?? row.createdAt),
     };
 }
 
@@ -148,34 +154,52 @@ export default function KnowledgePage() {
         let cancelled = false;
         async function load() {
             setLoading(true);
-            let query = getSupabase()
-                .from(TABLES.KNOWLEDGE_BASE)
-                .select(KB_COLUMNS, { count: 'exact' })
-                .order('updated_at', { ascending: false })
-                .order('id', { ascending: false })
-                .range(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE - 1);
+            const queries = [
+                // `$updatedAt`, not the `updatedAt` column: Appwrite keeps
+                // its own and the column is only set by whoever wrote the
+                // row, so ordering on it would float rows nobody touched.
+                Query.orderDesc('$updatedAt'),
+                Query.orderDesc('$id'),
+                Query.limit(PAGE_SIZE),
+                Query.offset(page * PAGE_SIZE),
+                Query.select([...KB_COLUMNS]),
+            ];
             if (searchQuery) {
-                const p = `*${searchQuery}*`;
-                query = query.or(`title.ilike.${p},category.ilike.${p},hazard_type.ilike.${p},source.ilike.${p}`);
+                // `contains` on a string is a case-insensitive substring
+                // match, which is what `ilike *term*` was.
+                queries.push(
+                    Query.or([
+                        Query.contains('title', searchQuery),
+                        Query.contains('category', searchQuery),
+                        Query.contains('hazardType', searchQuery),
+                        Query.contains('source', searchQuery),
+                    ]),
+                );
             }
-            const { data, count, error } = await query;
-            if (cancelled) return;
-            if (error) {
+            let loadedRows: KnowledgeRow[];
+            let total: number;
+            try {
+                const result = await listRows<KnowledgeRow>(TABLES.KNOWLEDGE_BASE, queries);
+                loadedRows = result.rows;
+                total = result.total;
+            } catch (error) {
+                if (cancelled) return;
                 console.error('Error fetching knowledge articles:', error);
                 toast.error('Failed to load knowledge articles.');
                 setArticles([]);
                 setTotalCount(null);
-            } else {
-                const rows = (data ?? []) as KnowledgeRow[];
-                if (rows.length === 0 && page > 0) {
-                    // Past the last page (rows were deleted elsewhere): step back.
-                    const lastPage = count ? Math.ceil(count / PAGE_SIZE) - 1 : page - 1;
-                    setPage(Math.max(0, Math.min(page - 1, lastPage)));
-                    return;
-                }
-                setArticles(rows.map(toArticle));
-                setTotalCount(count ?? null);
+                setLoading(false);
+                return;
             }
+            if (cancelled) return;
+            if (loadedRows.length === 0 && page > 0) {
+                // Past the last page (rows were deleted elsewhere): step back.
+                const lastPage = total ? Math.ceil(total / PAGE_SIZE) - 1 : page - 1;
+                setPage(Math.max(0, Math.min(page - 1, lastPage)));
+                return;
+            }
+            setArticles(loadedRows.map(toArticle));
+            setTotalCount(total);
             setLoading(false);
         }
         void load();
@@ -205,28 +229,24 @@ export default function KnowledgePage() {
             title,
             content,
             source: form.source.trim(),
-            image_url: imageUrl || null,
+            imageUrl: imageUrl || null,
         };
         if (picked) {
             data.category = picked.label;
-            data.hazard_type = picked.hazardType;
+            data.hazardType = picked.hazardType;
         } else if (!stored) {
             data.category = DEFAULT_KNOWLEDGE_CATEGORY.label;
-            data.hazard_type = DEFAULT_KNOWLEDGE_CATEGORY.hazardType;
+            data.hazardType = DEFAULT_KNOWLEDGE_CATEGORY.hazardType;
         }
         // Otherwise KEEP_STORED on an existing article: leave both columns untouched.
 
         setSaving(true);
         try {
-            const table = getSupabase().from(TABLES.KNOWLEDGE_BASE);
-            const { data: rows, error } = id
-                ? await table.update(data).eq('id', id).select('id')
-                : await table.insert(data).select('id');
-            if (error) throw error;
-            if (!rows || rows.length === 0) throw new Error('Article not found or not permitted');
+            if (id) await updateRow(TABLES.KNOWLEDGE_BASE, id, data);
+            else await createRow(TABLES.KNOWLEDGE_BASE, ID.unique(), data);
             toast.success(id ? 'Article updated' : 'Article created');
             setEditor(null);
-            // updated_at ordering puts the saved article first.
+            // `$updatedAt` ordering puts the saved article first.
             if (page === 0) setReloadKey((k) => k + 1);
             else setPage(0);
         } catch (error) {
@@ -243,13 +263,7 @@ export default function KnowledgePage() {
         setDeleting(true);
         setDeleteTarget(null);
         try {
-            const { data, error } = await getSupabase()
-                .from(TABLES.KNOWLEDGE_BASE)
-                .delete()
-                .eq('id', target.id)
-                .select('id');
-            if (error) throw error;
-            if (!data || data.length === 0) throw new Error('Article not found or not permitted');
+            await deleteRow(TABLES.KNOWLEDGE_BASE, target.id);
             toast.success('Article deleted');
             if (articles.length === 1 && page > 0) setPage((p) => p - 1);
             else setReloadKey((k) => k + 1);
@@ -420,6 +434,7 @@ export default function KnowledgePage() {
                                     id="kb-title"
                                     type="text"
                                     required
+                                    maxLength={TITLE_MAX}
                                     value={editor.form.title}
                                     onChange={(e) => updateForm('title', e.target.value)}
                                     className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
@@ -456,7 +471,8 @@ export default function KnowledgePage() {
                                         id="kb-source"
                                         type="text"
                                         value={editor.form.source}
-                                        onChange={(e) => updateForm('source', e.target.value)}
+                                        maxLength={SOURCE_MAX}
+                                    onChange={(e) => updateForm('source', e.target.value)}
                                         placeholder="e.g. NEMA, NiMet"
                                         className="w-full px-4 py-2.5 rounded-lg border border-gray-300 focus:ring-2 focus:ring-[#E63946] focus:border-transparent transition-all outline-none text-gray-900"
                                     />

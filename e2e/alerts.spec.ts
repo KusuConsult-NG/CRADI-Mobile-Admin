@@ -1,8 +1,8 @@
 import type { Page } from '@playwright/test';
-import { test, expect, openAsAdmin, toast, IDS } from './fixtures';
+import { test, expect, openAsAdmin, toast } from './fixtures';
 import { STATES, lgasForState } from '../lib/wards';
 
-type AlertRow = { id: string; title: string; target_lga: string; target_state: string | null; is_active: boolean; severity: string };
+type AlertRow = { $id: string; title: string; targetLga: string; targetState: string | null; isActive: boolean; severity: string };
 
 function alertCard(page: Page, title: string) {
     return page.locator('div.bg-white.rounded-xl').filter({ has: page.getByRole('heading', { name: title, exact: true }) });
@@ -56,15 +56,16 @@ test.describe('alerts', () => {
         await expect(created).toContainText('Obi, Nasarawa');
         await expect(created).toContainText('Critical');
         await expect(created).toContainText('Active');
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).at(-1)!;
-        expect(post.body).toEqual({
+        const post = (await mock.writes({ collection: 'alerts', op: 'create' })).at(-1)!;
+        // No `createdBy`: the `write` Function stamps it from the caller's
+        // session, so sending it would be a value the server ignores.
+        expect(post.data).toEqual({
             title: 'Windstorm alert',
             message: 'Stay indoors tonight.',
             severity: 'critical',
-            target_lga: 'Obi',
-            target_state: 'Nasarawa',
-            is_active: true,
-            created_by: IDS.admin,
+            targetLga: 'Obi',
+            targetState: 'Nasarawa',
+            isActive: true,
         });
     });
 
@@ -77,8 +78,8 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Publish Alert' }).click();
         await expect(toast(page, 'Alert published')).toBeVisible();
         await expect(alertCard(page, 'Plateau heat')).toContainText('All LGAs in Plateau');
-        let post = (await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).at(-1)!;
-        expect(post.body).toMatchObject({ target_lga: 'All', target_state: 'Plateau' });
+        let post = (await mock.writes({ collection: 'alerts', op: 'create' })).at(-1)!;
+        expect(post.data).toMatchObject({ targetLga: 'All', targetState: 'Plateau' });
 
         await page.getByRole('button', { name: 'New Alert' }).click();
         dialog = page.getByRole('dialog', { name: 'New Alert' });
@@ -89,10 +90,10 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Publish Alert' }).click();
         await expect(toast(page, 'Alert published')).toBeVisible();
         await expect(alertCard(page, 'Bwall flood')).toContainText("Qua'an Pan, Plateau");
-        post = (await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).at(-1)!;
-        expect(post.body).toMatchObject({ target_lga: "Qua'an Pan", target_state: 'Plateau' });
+        post = (await mock.writes({ collection: 'alerts', op: 'create' })).at(-1)!;
+        expect(post.data).toMatchObject({ targetLga: "Qua'an Pan", targetState: 'Plateau' });
         const row = (await mock.table<AlertRow>('alerts')).find((a) => a.title === 'Bwall flood');
-        expect(row).toMatchObject({ target_lga: "Qua'an Pan", target_state: 'Plateau' });
+        expect(row).toMatchObject({ targetLga: "Qua'an Pan", targetState: 'Plateau' });
     });
 
     test('the default target is everyone: "All" with no state', async ({ page, mock }) => {
@@ -103,8 +104,8 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Publish Alert' }).click();
         await expect(toast(page, 'Alert published')).toBeVisible();
         await expect(alertCard(page, 'Everyone')).toContainText('All LGAs');
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).at(-1)!;
-        expect(post.body).toMatchObject({ target_lga: 'All', target_state: null, severity: 'info' });
+        const post = (await mock.writes({ collection: 'alerts', op: 'create' })).at(-1)!;
+        expect(post.data).toMatchObject({ targetLga: 'All', targetState: null, severity: 'info' });
     });
 
     test('refuses an LGA that is not in the chosen state\'s list', async ({ page, mock }) => {
@@ -124,10 +125,10 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Publish Alert' }).click();
         await expect(toast(page, 'Choose an LGA of Benue from the list.')).toBeVisible();
         await expect(dialog).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'alerts' })).toHaveLength(0);
     });
 
-    // alerts.target_state is required by the database (migration 20260927080000:
+    // alerts.targetState is required by the database (migration 20260927080000:
     // check alerts_target_lga_needs_state), because an LGA name alone can mean
     // two places. The form must make that shape unreachable, not rely on the
     // insert being rejected.
@@ -165,7 +166,7 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Publish Alert' }).click();
         await expect(toast(page, 'Choose the state of the target LGA.')).toBeVisible();
         await expect(dialog).toBeVisible();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/alerts' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'alerts' })).toHaveLength(0);
     });
 
     test('deactivates an alert after confirmation', async ({ page, mock }) => {
@@ -174,11 +175,11 @@ test.describe('alerts', () => {
         await dialog.getByRole('button', { name: 'Deactivate' }).click();
         await expect(toast(page, 'Alert deactivated')).toBeVisible();
         await expect(page.getByText('No alerts found')).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/alerts' })).at(-1)!;
-        expect(patch.body).toEqual({ is_active: false });
+        const patch = (await mock.writes({ collection: 'alerts', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({ isActive: false });
         const row = (await mock.table<AlertRow>('alerts')).find((a) => a.title === 'Flood warning');
-        expect(row?.is_active).toBe(false);
-        expect(patch.query).toContain(`id=eq.${row!.id}`);
+        expect(row?.isActive).toBe(false);
+        expect(patch.documentId).toBe(row!.$id);
 
         await page.getByLabel('Filter alerts by status').selectOption('inactive');
         await expect(alertCard(page, 'Flood warning')).toContainText('Inactive');

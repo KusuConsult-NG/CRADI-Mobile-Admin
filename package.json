@@ -9,12 +9,16 @@
     "lint": "eslint .",
     "set:admin": "node scripts/set-admin.mjs",
     "typecheck": "tsc --noEmit",
-    "test:e2e": "playwright test -c e2e/playwright.config.ts"
+    "test:e2e": "playwright test -c e2e/playwright.config.ts",
+    "test:e2e:live": "playwright test -c e2e/live.config.ts",
+    "test:e2e:live:seed": "node e2e/live-seed.mjs",
+    "test:e2e:live:clean": "node e2e/live-seed.mjs --clean"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.117.2",
+    "appwrite": "^28.1.0",
     "lucide-react": "^0.469.0",
     "next": "16.3.6",
+    "node-appwrite": "^29.0.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hot-toast": "^2.6.0",

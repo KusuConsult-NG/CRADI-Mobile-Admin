@@ -1,20 +1,28 @@
 #!/usr/bin/env node
 /**
- * Promote an existing Supabase user to an approved admin.
+ * Promote an existing Appwrite user to an approved admin.
  *
- * Updates public.profiles for that user: role = 'admin', is_approved = true,
- * is_disabled = false. Uses the service role key (bypasses RLS) — run it
- * locally or in a trusted shell only.
+ * Updates their `profiles` row (role = 'admin', isApproved = true,
+ * isDisabled = false) **and the account's labels**, which is what the
+ * `read("label:admin")` permissions on `profiles` and `reports` actually
+ * check. Without the label the panel signs in and shows nothing: Appwrite
+ * answers a read you have no permission for with `200 {"total": 0}`, not
+ * with an error.
+ *
+ * Uses an API key (bypasses every permission) — run it locally or in a
+ * trusted shell only.
  *
  * Env:
- *   SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL)
- *   SUPABASE_SERVICE_ROLE_KEY
+ *   APPWRITE_ENDPOINT (or NEXT_PUBLIC_APPWRITE_ENDPOINT)
+ *   APPWRITE_PROJECT_ID (or NEXT_PUBLIC_APPWRITE_PROJECT_ID)
+ *   APPWRITE_API_KEY
+ *   APPWRITE_DATABASE_ID (optional; defaults to `cradi`)
  *
  * Usage:
  *   npm run set:admin -- admin@example.org
  *   node --env-file=.env.local scripts/set-admin.mjs admin@example.org
  */
-import { createClient } from '@supabase/supabase-js';
+import { Client, Query, TablesDB, Users } from 'node-appwrite';
 
 const email = (process.argv[2] || '').trim().toLowerCase();
 if (!email || !email.includes('@')) {
@@ -22,79 +30,99 @@ if (!email || !email.includes('@')) {
     process.exit(1);
 }
 
-const url = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || '').trim();
-const serviceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || '').trim();
-if (!url || !serviceKey) {
-    console.error('Set NEXT_PUBLIC_SUPABASE_URL (or SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY.');
+const endpoint = (process.env.APPWRITE_ENDPOINT || process.env.NEXT_PUBLIC_APPWRITE_ENDPOINT || '').trim();
+const project = (process.env.APPWRITE_PROJECT_ID || process.env.NEXT_PUBLIC_APPWRITE_PROJECT_ID || '').trim();
+const apiKey = (process.env.APPWRITE_API_KEY || '').trim();
+const databaseId = (process.env.APPWRITE_DATABASE_ID || process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID || 'cradi').trim();
+if (!endpoint || !project || !apiKey) {
+    console.error('Set APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID and APPWRITE_API_KEY.');
     process.exit(1);
 }
 
-const supabase = createClient(url, serviceKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-});
+const client = new Client().setEndpoint(endpoint).setProject(project).setKey(apiKey);
+const tables = new TablesDB(client);
+const users = new Users(client);
 
 /**
- * Finds the auth user id by exact email: profiles first, then a scan of auth
- * users. Uses an exact match (no LIKE wildcards) and refuses ambiguous results.
+ * The account id for an exact email: the profile row first, then the
+ * account list. Exact matches only, and ambiguity is refused rather than
+ * guessed — granting admin to the wrong account is not recoverable by
+ * running this again.
  */
 async function findUserId() {
-    const { data: profiles, error } = await supabase
-        .from('profiles')
-        .select('id')
-        .eq('email', email)
-        .limit(2);
-    if (error) throw new Error(`Profile lookup failed: ${error.message}`);
-    if (profiles.length > 1) throw new Error(`More than one profile has email ${email}; refusing to guess.`);
-    if (profiles.length === 1) return profiles[0].id;
+    const profiles = await tables.listRows({
+        databaseId,
+        tableId: 'profiles',
+        queries: [Query.equal('email', email), Query.limit(2)],
+    });
+    if (profiles.total > 1) throw new Error(`More than one profile has email ${email}; refusing to guess.`);
+    if (profiles.rows.length === 1) return profiles.rows[0].$id;
 
     const matches = [];
-    const perPage = 1000;
-    for (let page = 1; ; page += 1) {
-        const { data, error: listError } = await supabase.auth.admin.listUsers({ page, perPage });
-        if (listError) throw new Error(`Auth user lookup failed: ${listError.message}`);
-        matches.push(...data.users.filter((u) => (u.email || '').trim().toLowerCase() === email));
-        if (data.users.length < perPage) break;
+    const perPage = 100;
+    for (let offset = 0; ; offset += perPage) {
+        const page = await users.list({ queries: [Query.limit(perPage), Query.offset(offset)] });
+        matches.push(...page.users.filter((u) => (u.email || '').trim().toLowerCase() === email));
+        if (page.users.length < perPage) break;
     }
-    if (matches.length > 1) throw new Error(`More than one auth user has email ${email}; refusing to guess.`);
-    return matches[0]?.id ?? null;
+    if (matches.length > 1) throw new Error(`More than one account has email ${email}; refusing to guess.`);
+    return matches[0]?.$id ?? null;
 }
 
 async function main() {
     const userId = await findUserId();
     if (!userId) {
-        throw new Error(`No user with email ${email}. The user must sign up (mobile app or Supabase dashboard) first.`);
+        throw new Error(`No user with email ${email}. The user must sign up (mobile app or Appwrite console) first.`);
     }
 
-    // Only promote an account whose owner has proven control of the email/phone;
-    // otherwise anyone could pre-register a victim's address and inherit admin.
-    const { data: authData, error: authError } = await supabase.auth.admin.getUserById(userId);
-    if (authError || !authData?.user) {
-        throw new Error(`Could not load auth user ${userId}: ${authError?.message ?? 'not found'}`);
-    }
-    const authUser = authData.user;
-    if (!authUser.email_confirmed_at && !authUser.phone_confirmed_at) {
+    // Only promote an account whose owner has proven control of the email or
+    // phone; otherwise anyone could pre-register a victim's address and
+    // inherit admin.
+    const account = await users.get({ userId }).catch((error) => {
+        throw new Error(`Could not load account ${userId}: ${error?.message ?? 'not found'}`);
+    });
+    if (account.emailVerification !== true && account.phoneVerification !== true) {
         throw new Error(
             `User ${email} (id: ${userId}) has not confirmed their email address or phone. ` +
                 'Ask them to confirm it first; refusing to grant admin to an unconfirmed account.',
         );
     }
-    if ((authUser.email || '').trim().toLowerCase() !== email) {
-        throw new Error(`Auth user ${userId} has email ${authUser.email ?? '(none)'}, not ${email}; refusing.`);
+    if ((account.email || '').trim().toLowerCase() !== email) {
+        throw new Error(`Account ${userId} has email ${account.email || '(none)'}, not ${email}; refusing.`);
     }
 
-    const { data, error } = await supabase
-        .from('profiles')
-        .update({ role: 'admin', is_approved: true, is_disabled: false })
-        .eq('id', userId)
-        .select('id');
-    if (error) throw new Error(`Profile update failed: ${error.message}`);
-    if (!data || data.length === 0) {
-        throw new Error(`User ${userId} has no profile row (was the schema migration applied before sign-up?).`);
+    try {
+        await tables.updateRow({
+            databaseId,
+            tableId: 'profiles',
+            rowId: userId,
+            data: { role: 'admin', isApproved: true, isDisabled: false },
+        });
+    } catch (error) {
+        if (error?.code === 404) {
+            throw new Error(`User ${userId} has no profile row (was the schema provisioned before sign-up?).`);
+        }
+        throw new Error(`Profile update failed: ${error?.message ?? error}`);
+    }
+
+    // The row alone grants nothing. This is the half that does, and it is
+    // not optional — a profile that says admin with no label on the account
+    // is an admin who can read neither users nor reports.
+    try {
+        await users.updateLabels({ userId, labels: ['admin', 'approved'] });
+    } catch (error) {
+        throw new Error(
+            `The profile now says admin, but the account's labels were not set (${error?.message ?? error}). ` +
+                'Without them this account reads no users and no reports. Run this again.',
+        );
     }
 
     // Make sure a previously blocked account can sign in again.
-    const { error: unbanError } = await supabase.auth.admin.updateUserById(userId, { ban_duration: 'none' });
-    if (unbanError) console.warn(`Warning: could not clear ban: ${unbanError.message}`);
+    try {
+        await users.updateStatus({ userId, status: true });
+    } catch (error) {
+        console.warn(`Warning: could not re-enable the account: ${error?.message ?? error}`);
+    }
 
     console.log(`Granted admin to ${email} (id: ${userId}). Sign in to the admin panel with this account.`);
 }

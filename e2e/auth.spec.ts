@@ -4,9 +4,11 @@ test.describe('authentication', () => {
     test('signs in as admin and lands on the dashboard', async ({ page, mock }) => {
         await login(page);
         await expect(page.getByRole('heading', { name: 'Welcome back, Grace Admin!' })).toBeVisible();
-        const tokenCalls = await mock.requests({ method: 'POST', path: '/auth/v1/token' });
-        expect(tokenCalls).toHaveLength(1);
-        expect(tokenCalls[0].query).toBe('grant_type=password');
+        const sessionCalls = await mock.requests({
+            method: 'POST',
+            path: '/account/sessions/email',
+        });
+        expect(sessionCalls).toHaveLength(1);
     });
 
     test('a protected page redirects to /login?next= and returns there after sign-in', async ({ page }) => {
@@ -40,6 +42,12 @@ test.describe('authentication', () => {
         for (const next of attempts) {
             await page.goto(`/login?next=${next}`);
             await expect(page, `next=${next}`).toHaveURL(/^http:\/\/127\.0\.0\.1:\d+\/dashboard$/);
+            // Let the dashboard finish loading before the next hard
+            // navigation. page.goto() tears the document down mid-request,
+            // which aborts an in-flight fetch ("Failed to fetch") before
+            // React can cancel it — an artifact of the hard nav, not
+            // something a user clicking through the app would hit.
+            await page.waitForLoadState('networkidle');
         }
 
         // A same-origin path is honoured.
@@ -48,14 +56,14 @@ test.describe('authentication', () => {
     });
 
     test('wrong password and non-admin accounts are refused', async ({ page, mock, consoleGuard }) => {
-        consoleGuard.allow(/status of 400 .*\/auth\/v1\/token/);
+        consoleGuard.allow(/status of 401 .*\/account\/sessions\/email/);
         await page.goto('/login');
         await page.getByLabel('Email Address').fill(ADMIN.email);
         await page.getByLabel('Password', { exact: true }).fill('wrong');
         await page.getByRole('button', { name: 'Sign In' }).click();
         await expect(page.getByText('Incorrect email or password.')).toBeVisible();
 
-        // An approved monitor (role ewv) can sign in to Supabase but is not an admin.
+        // An approved monitor (role ewv) can sign in to Appwrite but is not an admin.
         await page.getByLabel('Email Address').fill('bola@cradi.test');
         await page.getByLabel('Password', { exact: true }).fill('bola-pass');
         await page.getByRole('button', { name: 'Sign In' }).click();
@@ -63,12 +71,15 @@ test.describe('authentication', () => {
             page.getByText('Access denied. This account is not an approved, active administrator.'),
         ).toBeVisible();
         await expect(page).toHaveURL(/\/login$/);
-        // The non-admin session is ended locally.
-        const logout = await mock.requests({ method: 'POST', path: '/auth/v1/logout' });
+        // The non-admin session is ended — and only this one: an Appwrite
+        // session is per-device, so deleting `current` leaves the same
+        // account signed in on the mobile app, which is what Supabase's
+        // `scope: 'local'` bought.
+        const logout = await mock.requests({
+            method: 'DELETE',
+            path: '/account/sessions/current',
+        });
         expect(logout).toHaveLength(1);
-        expect(logout[0].query).toBe('scope=local');
-        const stored = await page.evaluate(() => window.localStorage.getItem('cradi-admin-auth'));
-        expect(stored).toBeNull();
     });
 
     test('logout ends the session and protects the dashboard again', async ({ page, mock }) => {
@@ -76,14 +87,17 @@ test.describe('authentication', () => {
         await page.getByRole('button', { name: 'Logout' }).click();
         await expect(page).toHaveURL(/\/login$/);
         await expect(toast(page, 'Logged out successfully')).toBeVisible();
-        const logout = await mock.requests({ method: 'POST', path: '/auth/v1/logout' });
-        expect(logout.map((r) => r.query)).toEqual(['scope=local']);
+        const logout = await mock.requests({
+            method: 'DELETE',
+            path: '/account/sessions/current',
+        });
+        expect(logout).toHaveLength(1);
 
         await page.goto('/dashboard/users');
         await expect(page).toHaveURL(/\/login\?next=%2Fdashboard%2Fusers$/);
     });
 
-    test('security headers: CSP allows the Supabase origin (API, realtime, Storage images)', async ({ request }) => {
+    test('security headers: CSP allows the Appwrite origin (API, realtime, Storage images)', async ({ request }) => {
         const res = await request.get('/login');
         const csp = res.headers()['content-security-policy'];
         const host = new URL(MOCK_URL).host;

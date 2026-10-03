@@ -1,6 +1,6 @@
 import { test, expect, openAsAdmin, toast, MOCK_URL } from './fixtures';
 
-type SettingRow = { key: string; value: unknown; updated_at: string };
+type SettingRow = { $id: string; key: string; value: unknown; updatedAt: string };
 
 test.describe('app settings', () => {
     test.beforeEach(async ({ page }) => {
@@ -11,7 +11,7 @@ test.describe('app settings', () => {
 
     test('loads stored values and defaults for missing keys', async ({ page, mock }) => {
         await expect(page.getByLabel('Minimum peer confirmations')).toHaveValue('2');
-        // Stored as the JSON string "30": still read as a number.
+        // Stored as the string "30": still read as a number.
         await expect(page.getByLabel('Escalation timeout')).toHaveValue('30');
         await expect(page.getByLabel('Max SMS per alert event')).toHaveValue('20');
         await expect(page.getByLabel('Max SMS per LGA per day')).toHaveValue('50');
@@ -20,12 +20,17 @@ test.describe('app settings', () => {
         await expect(page.getByLabel('Update required message')).toHaveValue('');
         await expect(page.getByLabel('Support email')).toHaveValue('support@cradi.org');
         await expect(page.getByText('Not set: the default shown is used until you save.')).toHaveCount(3);
-        // Missing keys count as changes until saved.
-        await expect(page.getByRole('button', { name: 'Save 3 changes' })).toBeEnabled();
+        // Missing keys count as changes until saved — except the update
+        // message, whose default is empty: `value` is a required column, so
+        // "no message" is the absence of the row, and saving it would write
+        // nothing over nothing.
+        await expect(page.getByRole('button', { name: 'Save 2 changes' })).toBeEnabled();
 
-        const get = (await mock.requests({ method: 'GET', path: '/rest/v1/app_settings' }))[0];
+        const get = (await mock.reads('app_settings'))[0];
         expect(decodeURIComponent(get.query)).toBe(
-            'select=key,value,updated_at&key=in.(minimum_peer_confirmations,escalation_timeout_minutes,max_sms_per_alert_event,max_sms_per_lga_per_day,feature_flag_peer_chat,app_min_version,app_min_version_message,support_email)',
+            'queries[0]={"method":"equal","attribute":"key","values":["minimum_peer_confirmations","escalation_timeout_minutes","max_sms_per_alert_event","max_sms_per_lga_per_day","feature_flag_peer_chat","app_min_version","app_min_version_message","support_email"]}'
+                + '&queries[1]={"method":"select","values":["key","value","updatedAt"]}'
+                + '&queries[2]={"method":"limit","values":[8]}',
         );
     });
 
@@ -75,7 +80,7 @@ test.describe('app settings', () => {
         }
         await email.fill('help@cradi.org');
         await expect(save).toBeEnabled();
-        expect(await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'app_settings' })).toHaveLength(0);
     });
 
     test('an invalid stored value that is left unchanged does not block saving other keys', async ({ page, mock }) => {
@@ -90,10 +95,11 @@ test.describe('app settings', () => {
         // Still highlighted, but not part of the save.
         await expect(version).toHaveAttribute('aria-invalid', 'true');
         await page.getByLabel('Escalation timeout').fill('45');
-        await page.getByRole('button', { name: 'Save 4 changes' }).click();
-        await expect(toast(page, 'Saved 4 settings')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        const keys = (post.body as SettingRow[]).map((r) => r.key);
+        await page.getByRole('button', { name: 'Save 3 changes' }).click();
+        await expect(toast(page, 'Saved 3 settings')).toBeVisible();
+        // One call per setting: the `write` Function takes one document at
+        // a time, and the row id is the setting key.
+        const keys = (await mock.writes({ collection: 'app_settings' })).map((w) => w.documentId);
         expect(keys).toContain('escalation_timeout_minutes');
         expect(keys).not.toContain('app_min_version');
 
@@ -107,7 +113,7 @@ test.describe('app settings', () => {
         expect(stored?.value).toBe('1.2');
     });
 
-    test('saves changed values as typed JSON via upsert', async ({ page, mock }) => {
+    test('saves changed values as strings via upsert', async ({ page, mock }) => {
         await page.getByLabel('Minimum peer confirmations').fill('3');
         await page.getByRole('switch', { name: 'Peer chat enabled' }).uncheck();
         await page.getByLabel('Minimum app version').fill(' 1.2.3 ');
@@ -117,26 +123,29 @@ test.describe('app settings', () => {
         await page.getByRole('button', { name: 'Save 7 changes' }).click();
         await expect(toast(page, 'Saved 7 settings')).toBeVisible();
 
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        expect(post.query).toContain('on_conflict=key');
-        expect(post.prefer).toContain('resolution=merge-duplicates');
-        const byKey = Object.fromEntries((post.body as SettingRow[]).map((r) => [r.key, r.value]));
+        const writes = await mock.writes({ collection: 'app_settings' });
+        // Upsert, because a setting left at its default has never been
+        // stored, so its first save is a create.
+        expect(writes.every((w) => w.op === 'upsert')).toBe(true);
+        const byKey = Object.fromEntries(writes.map((w) => [w.documentId, w.data.value]));
+        // `app_settings.value` is a string column: numbers and booleans are
+        // stored as their text, which is what every reader parses.
         expect(byKey).toStrictEqual({
-            minimum_peer_confirmations: 3,
-            max_sms_per_alert_event: 20,
-            max_sms_per_lga_per_day: 50,
-            feature_flag_peer_chat: false,
+            minimum_peer_confirmations: '3',
+            max_sms_per_alert_event: '20',
+            max_sms_per_lga_per_day: '50',
+            feature_flag_peer_chat: 'false',
             app_min_version: '1.2.3',
             app_min_version_message: 'Please update now.',
             support_email: 'help@cradi.org',
             // escalation_timeout_minutes is stored as "30" and unchanged: not written.
         } as Record<string, unknown>);
-        for (const r of post.body as SettingRow[]) expect(typeof r.updated_at).toBe('string');
+        for (const w of writes) expect(typeof w.data.updatedAt).toBe('string');
 
         const stored = Object.fromEntries((await mock.table<SettingRow>('app_settings')).map((r) => [r.key, r.value]));
         expect(stored).toMatchObject({
-            minimum_peer_confirmations: 3,
-            feature_flag_peer_chat: false,
+            minimum_peer_confirmations: '3',
+            feature_flag_peer_chat: 'false',
             support_email: 'help@cradi.org',
             unrelated_key: 'ignored',
         });
@@ -152,9 +161,10 @@ test.describe('app settings', () => {
     });
 
     test('only changed keys are written; discard restores loaded values', async ({ page, mock }) => {
-        // Save the 3 missing defaults first so later saves are minimal.
-        await page.getByRole('button', { name: 'Save 3 changes' }).click();
-        await expect(toast(page, 'Saved 3 settings')).toBeVisible();
+        // Save the 2 missing defaults first so later saves are minimal.
+        await page.getByRole('button', { name: 'Save 2 changes' }).click();
+        await expect(toast(page, 'Saved 2 settings')).toBeVisible();
+        const before = (await mock.writes({ collection: 'app_settings' })).length;
         await expect(page.getByRole('button', { name: 'Save changes' })).toBeDisabled();
 
         await page.getByLabel('Escalation timeout').fill('45');
@@ -166,9 +176,11 @@ test.describe('app settings', () => {
         await page.getByLabel('Escalation timeout').fill('45');
         await page.getByRole('button', { name: 'Save 1 change' }).click();
         await expect(toast(page, 'Saved 1 setting')).toBeVisible();
-        const post = (await mock.requests({ method: 'POST', path: '/rest/v1/app_settings' })).at(-1)!;
-        expect((post.body as SettingRow[]).map(({ key, value }) => ({ key, value }))).toEqual([
-            { key: 'escalation_timeout_minutes', value: 45 },
-        ]);
+        expect(
+            (await mock.writes({ collection: 'app_settings' })).slice(before).map((w) => ({
+                key: w.documentId,
+                value: w.data.value,
+            })),
+        ).toEqual([{ key: 'escalation_timeout_minutes', value: '45' }]);
     });
 });

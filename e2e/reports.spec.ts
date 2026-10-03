@@ -1,13 +1,26 @@
 import type { Page } from '@playwright/test';
 import { test, expect, openAsAdmin, toast, IDS, MOCK_URL } from './fixtures';
 
-type ReportRow = { id: string; description: string; status: string; hazard_type: string; rejection_reason: string | null };
+type ReportRow = { $id: string; description: string; status: string; hazardType: string; rejectionReason: string | null };
 
 function card(page: Page, description: string) {
     return page.locator('div.bg-white.rounded-xl').filter({ has: page.locator('h3'), hasText: description });
 }
 
 const titles = (page: Page) => page.locator('h3');
+
+/**
+ * The Appwrite queries a logged request carried.
+ *
+ * The query string is form-encoded, so a space arrives as `+` —
+ * `decodeURIComponent` leaves those in place and would compare
+ * "Flash+Flood" against "Flash Flood". `URLSearchParams` decodes both.
+ */
+function queryValues(query: string): { method: string; attribute?: string; values: string[] }[] {
+    return [...new URLSearchParams(query)]
+        .filter(([key]) => key.startsWith('queries'))
+        .map(([, value]) => JSON.parse(value) as { method: string; attribute?: string; values: string[] });
+}
 
 function capitalize(s: string) {
     return s.charAt(0).toUpperCase() + s.slice(1);
@@ -35,12 +48,15 @@ test.describe('reports', () => {
         await expect(card(page, 'River Benue overflowing')).toContainText('Obi Ward, Obi, Benue');
     });
 
-    test('shows report images from Storage paths and absolute URLs (allowed by the CSP)', async ({ page }) => {
+    test('shows report images from Storage file ids and absolute URLs (allowed by the CSP)', async ({ page }) => {
         const images = card(page, 'River Benue overflowing').locator('img');
         await expect(images).toHaveCount(2);
+        // A bare stored value is expanded to Appwrite's `/view`, which is
+        // refused without `?project=` — so the query string is part of the
+        // contract, not decoration.
         await expect(images.nth(0)).toHaveAttribute(
             'src',
-            `${MOCK_URL}/storage/v1/object/public/report-images/reports/flood-1.jpg`,
+            `${MOCK_URL}/v1/storage/buckets/report-images/files/reports%2Fflood-1.jpg/view?project=cradi`,
         );
         await expect(images.nth(1)).toHaveAttribute('src', 'https://images.example/flood-2.jpg');
         // The Storage image actually loads (a CSP block would fail the console guard too).
@@ -66,19 +82,31 @@ test.describe('reports', () => {
         await expect(filter.locator('option')).toHaveText(['All Hazards', ...HAZARD_EXPECTATIONS.map(([h]) => h)]);
         for (const [hazard, descriptions] of HAZARD_EXPECTATIONS) {
             const loaded = page.waitForResponse(
-                (r) => r.url().includes('/rest/v1/reports') && r.url().includes('hazard_type=in.'),
+                (r) =>
+                    r.url().includes('/tables/reports/rows') &&
+                    decodeURIComponent(r.url()).includes('"attribute":"hazardType"'),
             );
             await filter.selectOption(hazard);
             await loaded;
             await expect(titles(page), hazard).toHaveText(descriptions.map(() => hazard));
             for (const d of descriptions) await expect(card(page, d)).toBeVisible();
         }
-        const flooding = (await mock.requests({ method: 'GET', path: '/rest/v1/reports' })).find((r) =>
-            decodeURIComponent(r.query).includes('hazard_type=in.(Flooding,'),
+        const flooding = (await mock.reads('reports')).find((r) =>
+            queryValues(r.query).some((q) => q.attribute === 'hazardType'),
         );
-        expect(new URLSearchParams(flooding!.query).get('hazard_type')).toBe(
-            'in.(Flooding,Flood,Floods,flood,floods,flooding,Flash Flood,flash flood)',
-        );
+        // The canonical name plus every legacy spelling, so a row written
+        // before the names were settled still answers the filter.
+        const hazardQuery = queryValues(flooding!.query).find((q) => q.attribute === 'hazardType')!;
+        expect(hazardQuery.values).toEqual([
+            'Flooding',
+            'Flood',
+            'Floods',
+            'flood',
+            'floods',
+            'flooding',
+            'Flash Flood',
+            'flash flood',
+        ]);
 
         await filter.selectOption('all');
         await expect(titles(page)).toHaveCount(11);
@@ -88,10 +116,10 @@ test.describe('reports', () => {
         await card(page, 'River Benue overflowing').getByRole('button', { name: 'Approve' }).click();
         await expect(toast(page, 'Report marked as approved')).toBeVisible();
         await expect(card(page, 'River Benue overflowing').getByText('Approved', { exact: true })).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
-        expect(patch.body).toEqual({ status: 'approved', updated_by: IDS.admin, approved_at: expect.any(String) });
+        const patch = (await mock.writes({ collection: 'reports', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({ status: 'approved', updatedBy: IDS.admin, approvedAt: expect.any(String) });
         // Optimistic lock: only applies to the status the card showed.
-        expect(new URLSearchParams(patch.query).get('status')).toBe('eq.pending');
+        expect(patch.expect).toEqual({ status: 'pending' });
         expect((await reportBy(mock, 'River Benue overflowing')).status).toBe('approved');
     });
 
@@ -102,7 +130,7 @@ test.describe('reports', () => {
         test(`${button} on a report decided elsewhere is refused and the list reloads`, async ({ page, mock }) => {
             const row = await reportBy(mock, 'Roofs blown off');
             // Another admin decides the report after this page loaded.
-            await fetch(`${MOCK_URL}/__mock/table/reports/${row.id}`, {
+            await fetch(`${MOCK_URL}/__mock/table/reports/${row.$id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: elsewhere }),
@@ -112,8 +140,8 @@ test.describe('reports', () => {
             await target.getByRole('button', { name: button }).click();
             await expect(toast(page, 'This report changed since you loaded it — reloading')).toBeVisible();
             await expect(target.getByText(capitalize(elsewhere), { exact: true })).toBeVisible();
-            const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
-            expect(new URLSearchParams(patch.query).get('status')).toBe('eq.pending');
+            const patch = (await mock.writes({ collection: 'reports', op: 'update' })).at(-1)!;
+            expect(patch.expect).toEqual({ status: 'pending' });
             // Nothing was overwritten.
             expect((await reportBy(mock, 'Roofs blown off')).status).toBe(elsewhere);
         });
@@ -124,13 +152,12 @@ test.describe('reports', () => {
         mock,
         consoleGuard,
     }) => {
-        consoleGuard.allow(/status of 400 .*\/rest\/v1\/rpc\/reopen_report/);
         consoleGuard.allow(/Error updating report:/);
         const row = await reportBy(mock, 'Bush burning near farms');
-        await fetch(`${MOCK_URL}/__mock/table/reports/${row.id}`, {
+        await fetch(`${MOCK_URL}/__mock/table/reports/${row.$id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ status: 'pending', verification_count: 0 }),
+            body: JSON.stringify({ status: 'pending', verificationCount: 0 }),
         });
         const target = card(page, 'Bush burning near farms');
         await target.getByRole('button', { name: 'Reset to Pending' }).click();
@@ -145,8 +172,8 @@ test.describe('reports', () => {
         await card(page, 'Roofs blown off').getByRole('button', { name: 'Mark Verified' }).click();
         await expect(toast(page, 'Report marked as verified')).toBeVisible();
         await expect(card(page, 'Roofs blown off').getByText('Verified', { exact: true })).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
-        expect(patch.body).toEqual({ status: 'verified', updated_by: IDS.admin, verified_at: expect.any(String) });
+        const patch = (await mock.writes({ collection: 'reports', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({ status: 'verified', updatedBy: IDS.admin, verifiedAt: expect.any(String) });
     });
 
     test('rejects with a reason after confirmation; cancel does nothing', async ({ page, mock }) => {
@@ -156,7 +183,7 @@ test.describe('reports', () => {
         await expect(dialog).toContainText('Reject this Pest Outbreak report?');
         await dialog.getByRole('button', { name: 'Cancel' }).click();
         await expect(dialog).toBeHidden();
-        expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'reports', op: 'update' })).toHaveLength(0);
 
         await target.getByRole('button', { name: 'Reject' }).click();
         dialog = page.getByRole('dialog', { name: 'Reject Report' });
@@ -164,22 +191,22 @@ test.describe('reports', () => {
         await dialog.getByRole('button', { name: 'Reject' }).click();
         await expect(toast(page, 'Report marked as rejected')).toBeVisible();
         await expect(target.getByText('Rejected', { exact: true })).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
-        expect(patch.body).toEqual({
+        const patch = (await mock.writes({ collection: 'reports', op: 'update' })).at(-1)!;
+        expect(patch.data).toEqual({
             status: 'rejected',
-            updated_by: IDS.admin,
-            rejected_at: expect.any(String),
-            rejection_reason: 'Duplicate of an existing report',
+            updatedBy: IDS.admin,
+            rejectedAt: expect.any(String),
+            rejectionReason: 'Duplicate of an existing report',
         });
-        expect((await reportBy(mock, 'Locusts on millet')).rejection_reason).toBe('Duplicate of an existing report');
+        expect((await reportBy(mock, 'Locusts on millet')).rejectionReason).toBe('Duplicate of an existing report');
     });
 
     test('rejecting without a reason stores null', async ({ page, mock }) => {
         await card(page, 'Cassava mosaic').getByRole('button', { name: 'Reject' }).click();
         await page.getByRole('dialog', { name: 'Reject Report' }).getByRole('button', { name: 'Reject' }).click();
         await expect(toast(page, 'Report marked as rejected')).toBeVisible();
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).at(-1)!;
-        expect(patch.body).toMatchObject({ status: 'rejected', rejection_reason: null });
+        const patch = (await mock.writes({ collection: 'reports', op: 'update' })).at(-1)!;
+        expect(patch.data).toMatchObject({ status: 'rejected', rejectionReason: null });
     });
 
     test('reset to pending goes through the reopen_report RPC', async ({ page, mock }) => {
@@ -191,17 +218,21 @@ test.describe('reports', () => {
         await expect(toast(page, 'Report marked as pending')).toBeVisible();
         await expect(target.getByText('Pending', { exact: true })).toBeVisible();
         await expect(target).not.toContainText('verifications');
-        const rpc = await mock.requests({ method: 'POST', path: '/rest/v1/rpc/reopen_report' });
+        const rpc = await mock.calls<{ operation: string; params: unknown }>('/operation');
         expect(rpc).toHaveLength(1);
         const row = await reportBy(mock, 'Bush burning near farms');
-        expect(rpc[0].body).toEqual({ p_report_id: row.id });
+        expect(rpc[0]).toEqual({ operation: 'reopen_report', params: { p_report_id: row.$id } });
         expect(row.status).toBe('pending');
         // Never written as a plain status update (the database refuses that).
-        expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/reports' })).toHaveLength(0);
+        expect(await mock.writes({ collection: 'reports', op: 'update' })).toHaveLength(0);
     });
 
     test('status filter reloads when a report leaves the filtered status', async ({ page }) => {
-        const loaded = page.waitForResponse((r) => r.url().includes('status=eq.pending'));
+        const loaded = page.waitForResponse(
+            (r) =>
+                r.url().includes('/tables/reports/rows') &&
+                decodeURIComponent(r.url()).includes('"attribute":"status"'),
+        );
         await page.getByLabel('Filter reports by status').selectOption('pending');
         await loaded;
         await expect(titles(page)).toHaveCount(8);

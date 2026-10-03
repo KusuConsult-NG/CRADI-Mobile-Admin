@@ -2,14 +2,14 @@ import type { Page } from '@playwright/test';
 import { test, expect, openAsAdmin, toast, IDS, MOCK_URL } from './fixtures';
 
 type Profile = {
-    id: string;
+    $id: string;
     role: string;
     state: string;
     lga: string;
     ward: string;
-    is_approved: boolean;
-    is_verified: boolean;
-    is_disabled: boolean;
+    isApproved: boolean;
+    isVerified: boolean;
+    isDisabled: boolean;
 };
 
 function row(page: Page, name: string) {
@@ -18,7 +18,7 @@ function row(page: Page, name: string) {
 
 async function profileOf(mock: { table<T>(name: string): Promise<T[]> }, id: string) {
     const rows = await mock.table<Profile>('profiles');
-    return rows.find((p) => p.id === id);
+    return rows.find((p) => p.$id === id);
 }
 
 async function confirmDialog(page: Page, title: string, button: string) {
@@ -50,20 +50,23 @@ test.describe('users', () => {
         await expect(self.getByRole('button', { name: /^Change role/ })).toHaveCount(0);
     });
 
-    test('search and status filter query PostgREST', async ({ page, mock }) => {
+    test('search and status filter become Appwrite queries', async ({ page, mock }) => {
         await page.getByLabel('Filter users by status').selectOption('pending');
         await expect(page.getByRole('row')).toHaveCount(3);
         await page.getByLabel('Search users').fill('uche');
         await expect(page.getByRole('row')).toHaveCount(2);
         await expect(row(page, 'Uche Unconfirmed')).toBeVisible();
-        const last = (await mock.requests({ method: 'GET', path: '/rest/v1/profiles' }))
-            .filter((r) => r.query.includes('or='))
+        const last = (await mock.reads('profiles'))
+            .filter((r) => decodeURIComponent(r.query).includes('"method":"or"'))
             .at(-1);
         const q = decodeURIComponent(last!.query);
-        expect(q).toContain('is_approved=eq.false');
-        expect(q).toContain('is_disabled=eq.false');
-        expect(q).toContain('or=(name.ilike.*uche*,email.ilike.*uche*,phone.ilike.*uche*)');
-        expect(last!.prefer).toContain('count=exact');
+        expect(q).toContain('{"method":"equal","attribute":"isApproved","values":[false]}');
+        expect(q).toContain('{"method":"equal","attribute":"isDisabled","values":[false]}');
+        // `contains` on a string is a case-insensitive substring match,
+        // which is what the PostgREST `ilike` filters were.
+        for (const field of ['name', 'email', 'phone']) {
+            expect(q).toContain(`{"method":"contains","attribute":"${field}","values":["uche"]}`);
+        }
     });
 
     test('approves a user whose email is confirmed', async ({ page, mock }) => {
@@ -72,12 +75,34 @@ test.describe('users', () => {
         await expect(toast(page, 'User approved successfully!')).toBeVisible();
         await expect(row(page, 'Ada Confirmed').getByText('Approved', { exact: true })).toBeVisible();
         const p = await profileOf(mock, IDS.pendingConfirmed);
-        expect(p).toMatchObject({ is_approved: true, is_verified: true });
-        // The update was pinned to the reviewed role / lga / ward.
-        const patch = (await mock.requests({ method: 'PATCH', path: '/rest/v1/profiles' })).at(-1)!;
-        expect(decodeURIComponent(patch.query)).toContain('role=eq.ewm');
-        expect(decodeURIComponent(patch.query)).toContain('lga=eq.Ado');
-        expect(decodeURIComponent(patch.query)).toContain('ward=eq.Apa');
+        expect(p).toMatchObject({ isApproved: true, isVerified: true });
+        // User administration does not go through the `write` Function — it
+        // goes through /api/admin/users/[uid], which uses the API key and a
+        // bulk `updateRows` whose queries are the compare-and-set.
+        const patch = (await mock.requests({
+            method: 'PATCH',
+            path: '/tablesdb/cradi/tables/profiles/rows',
+        })).at(-1)!;
+        const pinned = ((patch.body as { queries: string[] }).queries ?? []).map(
+            (q) => JSON.parse(q) as { method: string; attribute: string; values: unknown[] },
+        );
+        // The values the admin reviewed are pinned, so an edit made in
+        // another tab is refused rather than silently overwritten.
+        expect(pinned).toEqual(
+            expect.arrayContaining([
+                { method: 'equal', attribute: '$id', values: [IDS.pendingConfirmed] },
+                { method: 'equal', attribute: 'role', values: ['ewm'] },
+                { method: 'equal', attribute: 'lga', values: ['Ado'] },
+                { method: 'equal', attribute: 'ward', values: ['Apa'] },
+            ]),
+        );
+        // The account's labels come with the approval. Without them the
+        // row says approved and every `read("label:…")` still refuses —
+        // which Appwrite reports as 200 and zero rows, so the user sees an
+        // empty page and no error. Enforcement is not mocked; that it is
+        // enforced is `live.spec.ts`.
+        const labels = (await mock.requests({ method: 'PUT', path: `/users/${IDS.pendingConfirmed}/labels` })).at(-1);
+        expect((labels?.body as { labels: string[] })?.labels).toEqual(['ewm', 'approved']);
     });
 
     test('refuses to approve a user whose email is not confirmed', async ({ page, mock, consoleGuard }) => {
@@ -90,8 +115,8 @@ test.describe('users', () => {
         ).toBeVisible();
         await expect(row(page, 'Uche Unconfirmed').getByText('Pending', { exact: true })).toBeVisible();
         await expect(row(page, 'Uche Unconfirmed').getByText('Email not confirmed')).toBeVisible();
-        expect((await profileOf(mock, IDS.pendingUnconfirmed))?.is_approved).toBe(false);
-        expect(await mock.requests({ method: 'PATCH', path: '/rest/v1/profiles' })).toHaveLength(0);
+        expect((await profileOf(mock, IDS.pendingUnconfirmed))?.isApproved).toBe(false);
+        expect(await mock.writes({ collection: 'profiles', op: 'update' })).toHaveLength(0);
     });
 
     test('an approval is refused when the user changed their details meanwhile', async ({
@@ -113,7 +138,7 @@ test.describe('users', () => {
         await expect(
             toast(page, 'Failed to approve user: User details changed since you loaded them — reload and review again.'),
         ).toBeVisible();
-        expect((await profileOf(mock, IDS.pendingConfirmed))?.is_approved).toBe(false);
+        expect((await profileOf(mock, IDS.pendingConfirmed))?.isApproved).toBe(false);
     });
 
     test('changes a role', async ({ page, mock }) => {
@@ -134,22 +159,29 @@ test.describe('users', () => {
         expect((await profileOf(mock, IDS.pendingConfirmed))?.role).toBe('ldp_coordinator');
     });
 
-    test('blocks and unblocks a user (profile flag + Auth ban)', async ({ page, mock }) => {
+    test('blocks and unblocks a user (profile flag + account status)', async ({ page, mock }) => {
         await row(page, 'Bola Approved').getByRole('button', { name: 'Block Bola Approved' }).click();
         await confirmDialog(page, 'Block User', 'Block');
         await expect(toast(page, 'User blocked successfully!')).toBeVisible();
         await expect(row(page, 'Bola Approved').getByText('Blocked', { exact: true })).toBeVisible();
-        expect((await profileOf(mock, IDS.approved))?.is_disabled).toBe(true);
-        let bans = await mock.requests({ method: 'PUT', path: `/auth/v1/admin/users/${IDS.approved}` });
-        expect(bans.map((r) => r.body)).toEqual([expect.objectContaining({ ban_duration: '876000h' })]);
+        expect((await profileOf(mock, IDS.approved))?.isDisabled).toBe(true);
+        // Appwrite has no ban duration: an account is active or it is not.
+        let status = await mock.requests({
+            method: 'PATCH',
+            path: `/users/${IDS.approved}/status`,
+        });
+        expect(status.map((r) => r.body)).toEqual([{ status: false }]);
 
         await row(page, 'Bola Approved').getByRole('button', { name: 'Unblock Bola Approved' }).click();
         await confirmDialog(page, 'Unblock User', 'Unblock');
         await expect(toast(page, 'User unblocked successfully!')).toBeVisible();
         await expect(row(page, 'Bola Approved').getByText('Approved', { exact: true })).toBeVisible();
-        expect((await profileOf(mock, IDS.approved))?.is_disabled).toBe(false);
-        bans = await mock.requests({ method: 'PUT', path: `/auth/v1/admin/users/${IDS.approved}` });
-        expect(bans.at(-1)?.body).toEqual(expect.objectContaining({ ban_duration: 'none' }));
+        expect((await profileOf(mock, IDS.approved))?.isDisabled).toBe(false);
+        status = await mock.requests({
+            method: 'PATCH',
+            path: `/users/${IDS.approved}/status`,
+        });
+        expect(status.at(-1)?.body).toEqual({ status: true });
     });
 
     test('revokes approval', async ({ page, mock }) => {
@@ -158,7 +190,7 @@ test.describe('users', () => {
         await expect(toast(page, 'Approval revoked')).toBeVisible();
         await expect(row(page, 'Bola Approved').getByText('Pending', { exact: true })).toBeVisible();
         await expect(row(page, 'Bola Approved').getByRole('button', { name: 'Approve Bola Approved' })).toBeVisible();
-        expect((await profileOf(mock, IDS.approved))?.is_approved).toBe(false);
+        expect((await profileOf(mock, IDS.approved))?.isApproved).toBe(false);
     });
 
     test('approving or blocking in a filtered list reloads it (the row leaves the filter)', async ({ page }) => {

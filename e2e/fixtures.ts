@@ -2,21 +2,30 @@ import { test as base, expect, type Page } from '@playwright/test';
 
 export { expect };
 
-export const MOCK_URL = `http://127.0.0.1:${process.env.MOCK_SUPABASE_PORT || 54321}`;
+export const MOCK_URL = `http://127.0.0.1:${process.env.MOCK_APPWRITE_PORT || 54321}`;
 
-/** Seeded user ids (see e2e/mock-supabase.mjs). */
+/**
+ * Seeded user ids (see e2e/mock-appwrite.mjs).
+ *
+ * Appwrite ids, not UUIDs: accounts made through the `auth` Function use
+ * `unique()`, which answers with a 20-character id, and only the accounts
+ * carried over from Supabase still have one.
+ */
 export const IDS = {
-    admin: '00000000-0000-4000-8000-000000000001',
-    pendingConfirmed: '00000000-0000-4000-8000-000000000002',
-    pendingUnconfirmed: '00000000-0000-4000-8000-000000000003',
-    approved: '00000000-0000-4000-8000-000000000004',
-    blocked: '00000000-0000-4000-8000-000000000005',
+    admin: 'adminaccount00000001',
+    pendingConfirmed: 'pendingconfirmed0002',
+    pendingUnconfirmed: 'pendingunconfirm0003',
+    approved: 'approvedaccount00004',
+    blocked: 'blockedaccount000005',
 } as const;
 
 const PNG_1PX =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 
 export const ADMIN = { email: 'admin@cradi.test', password: 'admin-pass' };
+
+/** Every Function call goes to the one merged Function; the route is in the body. */
+export const CLIENT_EXECUTIONS = '/functions/client/executions';
 
 export interface LoggedRequest {
     method: string;
@@ -27,11 +36,42 @@ export interface LoggedRequest {
     status: number;
 }
 
+/** A payload the panel sent to the `write` Function. */
+export interface WriteCall {
+    op: 'create' | 'update' | 'upsert' | 'delete';
+    collection: string;
+    documentId: string;
+    data: Record<string, unknown>;
+    /** The optimistic lock, when the caller asked for one. */
+    expect?: Record<string, unknown>;
+}
+
+/** The routes inside the merged client Function (see lib/appwrite.ts). */
+export type FunctionRoute = '/write' | '/auth' | '/operation';
+
 export interface MockApi {
     /** Requests the mock received (browser and Next server), optionally filtered. */
     requests(filter?: { method?: string; path?: string | RegExp }): Promise<LoggedRequest[]>;
+    /**
+     * Payloads the panel sent to one route of the client Function, in order.
+     *
+     * `write`, `auth` and `operation` are one deployed Function that routes
+     * on the execution's path, so "which Function was called?" is a question
+     * about the request body rather than the URL.
+     */
+    calls<T = Record<string, unknown>>(route: FunctionRoute): Promise<T[]>;
     /** Current rows of a table. */
     table<T = Record<string, unknown>>(name: string): Promise<T[]>;
+    /**
+     * Calls the panel made to the `write` Function, in order.
+     *
+     * Every write goes through it — the collections are closed to
+     * clients — so "what did the panel try to write?" is one question
+     * about one endpoint rather than a POST/PATCH/DELETE per table.
+     */
+    writes(filter?: { collection?: string; op?: WriteCall['op'] }): Promise<WriteCall[]>;
+    /** Reads the panel made of a table, as logged requests. */
+    reads(table: string): Promise<LoggedRequest[]>;
 }
 
 export interface ConsoleGuard {
@@ -59,8 +99,40 @@ export const test = base.extend<{ mock: MockApi; consoleGuard: ConsoleGuard }>({
                                 (typeof filter.path === 'string' ? r.path === filter.path : filter.path.test(r.path))),
                     );
                 },
+                async calls<T>(route: FunctionRoute) {
+                    const all = (await mockFetch('/__mock/requests')) as LoggedRequest[];
+                    return all
+                        .filter(
+                            (r) =>
+                                r.method === 'POST' &&
+                                r.path === CLIENT_EXECUTIONS &&
+                                (r.body as { path?: string })?.path === route,
+                        )
+                        .map((r) => JSON.parse((r.body as { body: string }).body) as T);
+                },
                 async table<T>(name: string) {
                     return (await mockFetch(`/__mock/table/${name}`)) as T[];
+                },
+                async writes(filter) {
+                    const all = (await mockFetch('/__mock/requests')) as LoggedRequest[];
+                    return all
+                        .filter(
+                            (r) =>
+                                r.method === 'POST' &&
+                                r.path === CLIENT_EXECUTIONS &&
+                                (r.body as { path?: string })?.path === '/write',
+                        )
+                        .map((r) => JSON.parse((r.body as { body: string }).body) as WriteCall)
+                        .filter(
+                            (w) =>
+                                (!filter?.collection || w.collection === filter.collection) &&
+                                (!filter?.op || w.op === filter.op),
+                        );
+                },
+                async reads(table: string) {
+                    const all = (await mockFetch('/__mock/requests')) as LoggedRequest[];
+                    const path = `/tablesdb/cradi/tables/${table}/rows`;
+                    return all.filter((r) => r.method === 'GET' && r.path === path);
                 },
             });
         },
@@ -71,7 +143,11 @@ export const test = base.extend<{ mock: MockApi; consoleGuard: ConsoleGuard }>({
     // that the test did not explicitly allow.
     consoleGuard: [
         async ({ page }, use) => {
-            const allowed: RegExp[] = [];
+            // Asking Appwrite "is anyone signed in?" is a request, and for a
+            // guest it answers 401 — which the browser logs. Supabase read
+            // that from localStorage and made no call, so this is new, and
+            // it is the session check working rather than anything failing.
+            const allowed: RegExp[] = [/status of 401 .*\/v1\/account\)/];
             const problems: string[] = [];
             page.on('console', (msg) => {
                 if (msg.type() !== 'error') return;
