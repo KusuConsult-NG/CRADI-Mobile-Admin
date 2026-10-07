@@ -15,7 +15,20 @@ export const TABLES = {
     NEWS_LINKS: 'news_links',
 } as const;
 
-export const REPORT_IMAGES_BUCKET = 'report-images';
+/**
+ * The bucket the reports page builds evidence URLs from.
+ *
+ * `report-images` is what `plan.mjs` provisions and what the app uploads
+ * into, so the default is right for a normal project. It is overridable
+ * because a one-bucket Appwrite tier makes evidence and avatars share a
+ * bucket under whichever id that slot already holds — the Cloud project
+ * ran that way until the plan was upgraded, and this constant pointing at
+ * a bucket that did not exist would have shown as evidence thumbnails
+ * that silently 404. The Flutter client has the same escape hatch in
+ * `AppConfig` (`REPORT_IMAGES_BUCKET`), and the two must agree.
+ */
+export const REPORT_IMAGES_BUCKET =
+    process.env.NEXT_PUBLIC_APPWRITE_REPORT_IMAGES_BUCKET?.trim() || 'report-images';
 
 export const USER_ROLES = [
     'user',

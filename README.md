@@ -59,6 +59,8 @@ See [SETUP.md](./SETUP.md) for granting admin access and deploying to Railway.
 | `NEXT_PUBLIC_APPWRITE_ENDPOINT` | client + server (build time) | Appwrite REST base, including `/v1`; also the origin in the CSP (`lib/csp.ts`) |
 | `NEXT_PUBLIC_APPWRITE_PROJECT_ID` | client (build time) | Project id; public, access enforced by permissions |
 | `NEXT_PUBLIC_APPWRITE_DATABASE_ID` | client (build time) | Optional; defaults to `cradi` |
+| `NEXT_PUBLIC_APPWRITE_FN_CLIENT` | client (build time) | Optional; defaults to `client`, the merged Function the panel calls |
+| `NEXT_PUBLIC_APPWRITE_REPORT_IMAGES_BUCKET` | client (build time) | Optional; defaults to `report-images`. Only for a one-bucket tier, where it must match the Flutter client's `REPORT_IMAGES_BUCKET` define |
 | `APPWRITE_API_KEY` | server only (runtime) | Used by `/api/admin/*` routes and `scripts/set-admin.mjs`. Bypasses every permission — never prefix it with `NEXT_PUBLIC_` |
 | `APPWRITE_ENDPOINT` / `APPWRITE_PROJECT_ID` / `APPWRITE_DATABASE_ID` | server only (runtime) | Optional overrides; each falls back to the `NEXT_PUBLIC_` value |
 
