@@ -13,8 +13,10 @@ export const DATABASE_ID = process.env.NEXT_PUBLIC_APPWRITE_DATABASE_ID?.trim() 
  * The one Function a client calls, and the routes within it.
  *
  * It was three — `write`, `auth` and `operation` — and the Cloud plan
- * allows two Functions against the seven the backend needs, so they
- * share an entrypoint that routes on the execution's path. See
+ * allowed two Functions against the seven the backend needs, so they
+ * share an entrypoint that routes on the execution's path. The plan was
+ * upgraded on 7 October 2026; the merge stays, because this is what both
+ * clients and every test are written against. See
  * `CRADI-mobile/functions/cradi/src/client.js`.
  */
 export const CLIENT_FUNCTION =
