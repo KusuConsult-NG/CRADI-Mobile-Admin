@@ -169,13 +169,23 @@ test.describe('the panel against a live Appwrite', () => {
     });
 
     test('the session is carried by the SDK fallback, not by a cookie', async ({ page, context }) => {
-        // Appwrite and the panel are different sites, so the session
-        // cookie is third-party and the browser drops it. The Web SDK
-        // falls back to `localStorage.cookieFallback` plus an
+        // Appwrite and the panel are different sites, so its session
+        // cookie is third-party. The Web SDK does not rely on it: it
+        // stores the session in `localStorage.cookieFallback` and sends an
         // `X-Fallback-Cookies` header, and that is what actually carries
         // every authenticated call. Asserted because it is load-bearing
         // and invisible: if an SDK upgrade changed it, every page would
         // go quietly empty rather than fail.
+        //
+        // Whether the browser *also* keeps the cookie depends on the
+        // deployment, which is why this no longer asserts that none
+        // exists. Against a local plain-HTTP stack Chromium blocks it;
+        // against Cloud over HTTPS it keeps `.fra.cloud.appwrite.io`
+        // (`SameSite=None; Secure`). Neither tells us anything we need.
+        // What we need is that the panel does not *depend* on one —
+        // Safari blocks third-party cookies outright and Chrome is
+        // phasing them out — so the test clears every cookie and checks
+        // the session still works.
         //
         // It also decides the threat model. The session is readable by
         // any script on this origin, where an HttpOnly cookie would not
@@ -189,13 +199,21 @@ test.describe('the panel against a live Appwrite', () => {
         await page.waitForLoadState('networkidle');
 
         expect(authed.length, 'requests carrying the fallback session').toBeGreaterThan(0);
-        expect(await context.cookies()).toEqual([]);
         const stored = await page.evaluate(() => localStorage.getItem('cookieFallback'));
         expect(stored, 'the SDK stores the session here').toMatch(/a_session_/);
 
-        // And it survives a reload, which is the whole point of storing it.
+        // The whole claim, in one step: with every cookie gone, a reload
+        // still lands on the dashboard. That is stronger than the plain
+        // reload this replaced (which proved only that the session
+        // survived) and stronger than asserting no cookie exists (which
+        // proved only that this deployment happened not to set one).
+        await context.clearCookies();
         await page.reload();
         await expect(page.getByText('Total Users', { exact: true })).toBeVisible();
+        expect(
+            await page.evaluate(() => localStorage.getItem('cookieFallback')),
+            'the fallback session is what survived the purge',
+        ).toMatch(/a_session_/);
     });
 
     test('reads reports, which only the admin label grants', async ({ page }) => {
