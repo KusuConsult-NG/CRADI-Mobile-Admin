@@ -80,7 +80,53 @@ npm run dev
 
 Open http://localhost:3000 and sign in with the admin account.
 
-## Deployment (Railway)
+## Deployment (Appwrite Sites)
+
+The panel needs a Node runtime, not static hosting: `app/api/admin/*` and
+`app/api/health` are server routes, `proxy.ts` is middleware, and
+`APPWRITE_API_KEY` must never reach the browser. Appwrite Sites runs Next.js
+server-side and detects the framework from `package.json` and `next.config.ts`
+with no config file in the repo, so nothing here changes for the move.
+
+1. Appwrite console → **Sites** → create a site from this repository
+   (`KusuConsult-NG/CRADI-Mobile-Admin`), framework **Next.js**, branch `main`,
+   root directory = repository root.
+2. Build settings: install command default, build command `npm run build`,
+   output directory `./.next`. Detection normally fills these in; confirm them
+   rather than assuming, and leave `next.config.ts` alone — this app does not
+   set `output`, which is the default (non-standalone) mode.
+3. Add the three variables **before the first build**:
+
+   | variable | value |
+   | --- | --- |
+   | `NEXT_PUBLIC_APPWRITE_ENDPOINT` | `https://fra.cloud.appwrite.io/v1` |
+   | `NEXT_PUBLIC_APPWRITE_PROJECT_ID` | the project id |
+   | `APPWRITE_API_KEY` | server key, marked secret |
+
+   `next build` inlines every `NEXT_PUBLIC_*` value into the client bundle, so
+   one set afterwards changes nothing until the site is rebuilt. This is not
+   hypothetical: the Railway deployment served a "Configuration required"
+   screen for exactly this reason. `APPWRITE_API_KEY` must keep its
+   server-only name — prefixing it `NEXT_PUBLIC_` would publish a key that
+   bypasses every permission.
+4. Add the site's domain as a **Web platform** in the same Appwrite project, or
+   every request from it is refused by CORS. Check whether Sites registers its
+   own domain automatically; if it does not, add it by hand.
+5. Verify by opening the site and signing in — not by the healthcheck.
+   `GET /api/health` returns `{"ok": true}` unconditionally, so it passes while
+   the app is completely misconfigured.
+6. Only once sign-in works, decommission Railway: delete the service, then
+   remove its domain from the Appwrite project's Web platforms. A stale,
+   misconfigured admin panel left on a public URL is worse than none. Keep
+   `railway.json` in the repo until then — it is the way back if the move
+   stalls.
+
+What could not be confirmed from the documentation at the time of writing: how
+the output-directory setting interacts with a Next.js build, and whether Sites
+adds its domain as a Web platform for you. Both are visible in the console in
+under a minute; check them rather than trusting this list.
+
+## Deployment (Railway — the previous host)
 
 `railway.json` configures the service: Nixpacks builder, `npm run build`,
 `npm start` (listens on Railway's `$PORT`), healthcheck `GET /api/health`.
@@ -111,7 +157,10 @@ Open http://localhost:3000 and sign in with the admin account.
   data needs the schema to have been provisioned.
 - **"Configuration required" screen instead of the login page** – the
   `NEXT_PUBLIC_*` variables were missing, or the endpoint did not end in
-  `/v1`, when the bundle was built. Set them and redeploy (not restart).
+  `/v1`, when the bundle was built. Set them and **rebuild**. On Railway a
+  restart re-uses the same bundle and changes nothing; on Appwrite Sites
+  trigger a new deployment. Setting the variables is never enough on its own,
+  on either host.
 - **Every request fails with a CORS error** – the origin is not registered as
   a Web platform in the Appwrite project.
 - **A write fails with "Your role does not allow…"** – the `write` Function
