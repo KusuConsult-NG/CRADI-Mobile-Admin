@@ -84,17 +84,40 @@ Open http://localhost:3000 and sign in with the admin account.
 
 The panel needs a Node runtime, not static hosting: `app/api/admin/*` and
 `app/api/health` are server routes, `proxy.ts` is middleware, and
-`APPWRITE_API_KEY` must never reach the browser. Appwrite Sites runs Next.js
-server-side and detects the framework from `package.json` and `next.config.ts`
-with no config file in the repo, so nothing here changes for the move.
+`APPWRITE_API_KEY` must never reach the browser.
+
+Appwrite Sites detects the framework as `nextjs` from `package.json` and
+`next.config.ts` on its own. **Detection does not set the adapter**, and the
+adapter is what decides whether your app runs. Every route in this app builds
+as `ƒ` — dynamic, server-rendered on demand — and there is no statically
+exportable page, not even `/`:
+
+```
+Route (app)
+┌ ƒ /                              ├ ƒ /dashboard/knowledge
+├ ƒ /_not-found                    ├ ƒ /dashboard/news
+├ ƒ /api/admin/users/[uid]         ├ ƒ /dashboard/reports
+├ ƒ /api/admin/users/confirmation  ├ ƒ /dashboard/settings
+├ ƒ /api/health                    ├ ƒ /dashboard/users
+├ ƒ /dashboard                     ├ ƒ /login
+├ ƒ /dashboard/alerts              └ ƒ /reset-password
+├ ƒ /dashboard/authorities
+ƒ Proxy (Middleware)
+```
+
+So **`adapter` must be `ssr`**. Under `adapter: static` Appwrite serves
+`./.next` as a folder of files, finds no `index.html`, and returns its own 404
+on every path — with a green build, all 15 routes compiled, and correct
+variables. That was the state of this site for most of a day.
 
 1. Appwrite console → **Sites** → create a site from this repository
    (`KusuConsult-NG/CRADI-Mobile-Admin`), framework **Next.js**, branch `main`,
    root directory = repository root.
-2. Build settings: install command default, build command `npm run build`,
-   output directory `./.next`. Detection normally fills these in; confirm them
-   rather than assuming, and leave `next.config.ts` alone — this app does not
-   set `output`, which is the default (non-standalone) mode.
+2. Build settings, all confirmed working: adapter **SSR**, install command
+   `npm install`, build command `npm run build`, output directory `./.next`,
+   build runtime `node-22`. Leave `next.config.ts` alone — this app does not
+   set `output`, and the default (non-standalone) mode is what `./.next` plus
+   the SSR adapter expects.
 3. Add the three variables **before the first build**:
 
    | variable | value |
@@ -109,22 +132,70 @@ with no config file in the repo, so nothing here changes for the move.
    screen for exactly this reason. `APPWRITE_API_KEY` must keep its
    server-only name — prefixing it `NEXT_PUBLIC_` would publish a key that
    bypasses every permission.
+
+   Set and read these **in the console**. `appwrite sites list-variables`
+   prints every value in full, the API key included; the `secret: [hidden]`
+   line in its output is decoration, not redaction.
 4. Add the site's domain as a **Web platform** in the same Appwrite project, or
-   every request from it is refused by CORS. Check whether Sites registers its
-   own domain automatically; if it does not, add it by hand.
+   every request from the browser is refused by CORS. The server side works
+   regardless, so a missing platform shows up as a network error on sign-in
+   rather than "invalid credentials".
 5. Verify by opening the site and signing in — not by the healthcheck.
    `GET /api/health` returns `{"ok": true}` unconditionally, so it passes while
-   the app is completely misconfigured.
+   the app is completely misconfigured. It is still the fastest way to tell an
+   SSR site that is running from a static one that is only serving files.
 6. Only once sign-in works, decommission Railway: delete the service, then
    remove its domain from the Appwrite project's Web platforms. A stale,
    misconfigured admin panel left on a public URL is worse than none. Keep
    `railway.json` in the repo until then — it is the way back if the move
    stalls.
 
-What could not be confirmed from the documentation at the time of writing: how
-the output-directory setting interacts with a Next.js build, and whether Sites
-adds its domain as a Web platform for you. Both are visible in the console in
-under a minute; check them rather than trusting this list.
+### Redeploying from the CLI
+
+Two traps, both hit in practice:
+
+`appwrite sites update` is a **full replace**. Omitting the VCS flags clears
+the GitHub connection, and the next deployment fails with "Installation with
+the requested ID could not be found". Read the current values out of
+`appwrite sites get` first and pass all four back:
+
+```sh
+appwrite sites update --site-id "$SITE" --name 'CRADI-Mobile-Admin' \
+  --framework nextjs --adapter ssr \
+  --install-command 'npm install' --build-command 'npm run build' \
+  --output-directory './.next' --build-runtime node-22 \
+  --installation-id "$INSTALLATION_ID" --provider-repository-id "$REPO_ID" \
+  --provider-branch main --provider-root-directory './'
+```
+
+Deploy **from the repository**, never by uploading the working tree:
+
+```sh
+appwrite sites create-vcs-deployment --site-id "$SITE" \
+  --type branch --reference main --activate true
+```
+
+A manual deployment ships `node_modules` as source and reports
+`buildDuration: 0` — nothing compiles, no `NEXT_PUBLIC_*` is inlined, and it
+still reads `status: ready`. Two of those sat active during the cutover looking
+healthy.
+
+To tell a real build from an empty one, check the deployment rather than the
+site:
+
+```sh
+appwrite sites get-deployment --site-id "$SITE" --deployment-id "$DEPLOYMENT"
+```
+
+- `buildSize` non-zero (~245 MB here); `0` means nothing was produced.
+- `buildDuration` in tens of seconds (~88s here), never `0`.
+- `Bundling for SSR started` / `finished` in the logs. This line is absent
+  under the static adapter and is the clearest proof the adapter took effect.
+- `Edge distribution finished successfully (6/6)`. A partial count such as
+  `(1/6)` is a symptom of distributing a large wrong payload, not an Appwrite
+  fault — check the adapter before reporting it upstream.
+- `live` is derived, not settable: it reads `false` whenever the active
+  deployment is not servable under the current adapter.
 
 ## Deployment (Railway — the previous host)
 
@@ -155,6 +226,13 @@ under a minute; check them rather than trusting this list.
 - **Empty lists / failed counts** – `profiles` and `reports` are readable only
   with the `admin` label on the account (see step 3), and the rest of the
   data needs the schema to have been provisioned.
+- **Every path 404s, including `/`** – the Site's `adapter` is `static`. Every
+  route in this app is server-rendered on demand, so there are no files to
+  serve and Appwrite's router answers all of them. The build is green and the
+  variables are irrelevant to it. `curl .../api/health` returning a 404 rather
+  than `{"ok": true}` confirms no Node server is running. Set the adapter to
+  `ssr` and redeploy — see "Redeploying from the CLI" above, and pass the VCS
+  flags in the same call.
 - **"Configuration required" screen instead of the login page** – the
   `NEXT_PUBLIC_*` variables were missing, or the endpoint did not end in
   `/v1`, when the bundle was built. Set them and **rebuild**. On Railway a
