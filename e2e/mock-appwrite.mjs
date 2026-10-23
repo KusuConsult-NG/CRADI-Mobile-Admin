@@ -45,6 +45,7 @@ const IDS = {
     pendingUnconfirmed: 'pendingunconfirm0003',
     approved: 'approvedaccount00004',
     blocked: 'blockedaccount000005',
+    coordinator: 'coordinatoracct0006',
 };
 
 // Columns per collection, from CRADI-mobile/infra/appwrite/columns.json.
@@ -165,6 +166,7 @@ function seed() {
         { $id: IDS.pendingUnconfirmed, email: 'uche@cradi.test', password: 'uche-pass', name: 'Uche Unconfirmed', emailVerification: false, phoneVerification: false, status: true },
         { $id: IDS.approved, email: 'bola@cradi.test', password: 'bola-pass', name: 'Bola Approved', emailVerification: true, phoneVerification: false, status: true },
         { $id: IDS.blocked, email: 'chidi@cradi.test', password: 'chidi-pass', name: 'Chidi Blocked', emailVerification: true, phoneVerification: false, status: false },
+        { $id: IDS.coordinator, email: 'ngozi@cradi.test', password: 'ngozi-pass', name: 'Ngozi Coordinator', emailVerification: true, phoneVerification: false, status: true },
     ];
     const rows = {
         profiles: [
@@ -173,6 +175,9 @@ function seed() {
             profile(IDS.pendingUnconfirmed, { email: 'uche@cradi.test', name: 'Uche Unconfirmed', role: 'ewv' }, iso(2)),
             profile(IDS.approved, { email: 'bola@cradi.test', name: 'Bola Approved', role: 'ewv', isApproved: true, isVerified: true, state: 'Benue', lga: 'Obi', ward: 'Obi Ward' }, iso(3)),
             profile(IDS.blocked, { email: 'chidi@cradi.test', name: 'Chidi Blocked', role: 'ewm', isApproved: true, isDisabled: true, state: 'Plateau', lga: "Qua'an Pan", ward: 'Bwall' }, iso(4)),
+            // The coordination tier: in the panel, but not for user
+            // administration or app settings.
+            profile(IDS.coordinator, { email: 'ngozi@cradi.test', name: 'Ngozi Coordinator', role: 'ldp_coordinator', isApproved: true, isVerified: true, state: 'Benue', lga: 'Makurdi', ward: 'Agan' }, iso(5)),
         ],
         reports: [
             report(1, { hazardType: 'Flooding', description: 'River Benue overflowing', severity: 'high', imageUrls: ['reports/flood-1.jpg', 'https://images.example/flood-2.jpg'] }),

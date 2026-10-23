@@ -3,7 +3,7 @@
 import { useAuth } from '@/lib/auth-context';
 import { useEffect, useState } from 'react';
 import { countRows, Query } from '@/lib/data';
-import { TABLES } from '@/lib/constants';
+import { ROLE_LABELS, TABLES } from '@/lib/constants';
 import {
     Users,
     AlertTriangle,
@@ -61,10 +61,19 @@ const STAT_KEYS: (keyof Stats)[] = [
     'activeAlerts',
 ];
 
-/** Loads each count independently so one failure doesn't blank the others. */
-async function loadStats(): Promise<{ stats: Stats; failures: number; total: number }> {
+/**
+ * Loads each count independently so one failure doesn't blank the others.
+ *
+ * `withUsers` is false for a role that cannot read the `profiles` table.
+ * It is not a tidying-up: that read is scoped by document permissions to
+ * the owner plus `label:admin` and `label:techSupport`, so for anybody
+ * else it *succeeds* and returns 1 — their own row — and the tile would
+ * report "Total Users: 1" as a fact. A count nobody can compute is left
+ * out rather than guessed at.
+ */
+async function loadStats(withUsers: boolean): Promise<{ stats: Stats; failures: number; total: number }> {
     const results = await Promise.allSettled([
-        countOf(TABLES.PROFILES),
+        withUsers ? countOf(TABLES.PROFILES) : Promise.resolve(null),
         countOf(TABLES.REPORTS),
         countOf(TABLES.REPORTS, [Query.equal('status', 'pending')]),
         countOf(TABLES.REPORTS, [Query.equal('status', ['approved', 'verified'])]),
@@ -94,13 +103,14 @@ export default function DashboardPage() {
     const { user, loading: authLoading } = useAuth();
     const [stats, setStats] = useState<Stats>(EMPTY_STATS);
     const [loading, setLoading] = useState(true);
+    const canSeeUsers = user?.sections.includes('users') ?? false;
 
     useEffect(() => {
         // Signed-out users are redirected by app/dashboard/layout.tsx.
         if (!user) return;
 
         let cancelled = false;
-        void loadStats().then(({ stats: next, failures, total }) => {
+        void loadStats(canSeeUsers).then(({ stats: next, failures, total }) => {
             if (cancelled) return;
             setStats(next);
             setLoading(false);
@@ -111,7 +121,7 @@ export default function DashboardPage() {
         return () => {
             cancelled = true;
         };
-    }, [user]);
+    }, [user, canSeeUsers]);
 
     if (authLoading || !user) {
         return (
@@ -127,7 +137,7 @@ export default function DashboardPage() {
                 {/* Welcome Section */}
                 <div className="mb-8">
                     <h2 className="text-3xl font-bold text-gray-900 mb-2">
-                        Welcome back, {user.name || 'Admin'}!
+                        Welcome back, {user.name || ROLE_LABELS[user.role]}!
                     </h2>
                     <p className="text-gray-600">
                         Here&apos;s an overview of the CRADI system status and recent activity.
@@ -142,7 +152,8 @@ export default function DashboardPage() {
                 ) : (
                     <>
                         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-                            {/* Total Users */}
+                            {/* Total Users — only for a role that can read them. */}
+                            {canSeeUsers && (
                             <Link href="/dashboard/users" aria-label="View all users" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">
                                 <div className="flex items-center justify-between mb-4">
                                     <div className="w-12 h-12 bg-red-50 rounded-lg flex items-center justify-center">
@@ -152,6 +163,7 @@ export default function DashboardPage() {
                                 <h3 className="text-2xl font-bold text-gray-900 mb-1">{formatStat(stats.totalUsers)}</h3>
                                 <p className="text-gray-600 text-sm">Total Users</p>
                             </Link>
+                            )}
 
                             {/* Total Reports */}
                             <Link href="/dashboard/reports" aria-label="View all reports" className="block bg-white rounded-xl shadow-sm border border-gray-100 p-6 hover:shadow-md transition-shadow focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#D62828] focus-visible:ring-offset-2">

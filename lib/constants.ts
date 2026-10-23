@@ -39,6 +39,7 @@ export const USER_ROLES = [
     'project_staff',
     'admin',
     'techSupport',
+    'media',
 ] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 
@@ -55,7 +56,65 @@ export const ROLE_LABELS: Record<UserRole, string> = {
     project_staff: 'Project Staff',
     admin: 'Admin',
     techSupport: 'Tech Support',
+    media: 'Media',
 };
+
+/**
+ * Which sections of this panel a role may use.
+ *
+ * Matrix 4.1 puts four roles in the panel at three levels, and the panel
+ * had one level: every signed-in account saw all eight nav links and the
+ * subtitle "Administrator". A coordinator signing in was shown a Users
+ * tab whose API routes answer 403, and an Early Responder or a plain user
+ * was shown the whole thing over a dashboard with nothing in it.
+ *
+ * What a role can actually *read* is not decided here. The report list
+ * calls `listRows` under the user's own session, so Appwrite's document
+ * permissions are what scope it — the same ACL the mobile app is subject
+ * to. This is the navigation telling the truth about where that leads.
+ */
+export const DASHBOARD_SECTIONS = [
+    'dashboard', 'users', 'reports', 'knowledge', 'news', 'alerts',
+    'authorities', 'settings',
+] as const;
+export type DashboardSection = (typeof DASHBOARD_SECTIONS)[number];
+
+/** Everything, including user administration and app settings. */
+const FULL = [...DASHBOARD_SECTIONS];
+
+/**
+ * Coordination: the reports, the alerts raised from them, and the
+ * reference content.
+ *
+ * No `users` and no `settings`. Those are the two the server already
+ * refuses — `requireAdmin` on the user routes, and `app_settings` is
+ * `label:admin` in the Appwrite plan — so offering them would be offering
+ * a 403. The LDP Coordinator and Project Staff tiers differ not in which
+ * sections they get but in how many reports those sections return, which
+ * is the ACL.
+ */
+const COORDINATION: DashboardSection[] = [
+    'dashboard', 'reports', 'knowledge', 'news', 'alerts', 'authorities',
+];
+
+export const ROLE_SECTIONS: Record<UserRole, readonly DashboardSection[]> = {
+    admin: FULL,
+    techSupport: FULL,
+    ldp_coordinator: COORDINATION,
+    project_staff: COORDINATION,
+    // Not panel roles. They have the mobile app; this is the back office,
+    // and an empty dashboard is a worse answer than being told plainly.
+    user: [],
+    ewm: [],
+    ewv: [],
+    ewr: [],
+    media: [],
+};
+
+/** The sections [role] may use — none for an unknown or unapproved role. */
+export function sectionsFor(role: unknown): readonly DashboardSection[] {
+    return isUserRole(role) ? ROLE_SECTIONS[role] : [];
+}
 
 export const REPORT_STATUSES = ['pending', 'verified', 'approved', 'rejected'] as const;
 export type ReportStatus = (typeof REPORT_STATUSES)[number];
