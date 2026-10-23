@@ -68,7 +68,7 @@ test.describe('authentication', () => {
         await page.getByLabel('Password', { exact: true }).fill('bola-pass');
         await page.getByRole('button', { name: 'Sign In' }).click();
         await expect(
-            page.getByText('Access denied. This account is not an approved, active administrator.'),
+            page.getByText('Access denied. This account does not have access to the admin panel.'),
         ).toBeVisible();
         await expect(page).toHaveURL(/\/login$/);
         // The non-admin session is ended — and only this one: an Appwrite

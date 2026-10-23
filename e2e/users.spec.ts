@@ -35,8 +35,8 @@ test.describe('users', () => {
     });
 
     test('lists users with status and "Email not confirmed" badges', async ({ page }) => {
-        await expect(page.getByRole('row')).toHaveCount(6); // header + 5 users
-        await expect(page.getByText('Showing 1–5 of 5 users')).toBeVisible();
+        await expect(page.getByRole('row')).toHaveCount(7); // header + 6 users
+        await expect(page.getByText('Showing 1–6 of 6 users')).toBeVisible();
         await expect(row(page, 'Uche Unconfirmed').getByText('Email not confirmed')).toBeVisible();
         await expect(page.getByText('Email not confirmed')).toHaveCount(1);
         await expect(row(page, 'Ada Confirmed').getByText('Pending', { exact: true })).toBeVisible();

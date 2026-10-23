@@ -5,12 +5,16 @@ import { useRouter } from 'next/navigation';
 import toast from 'react-hot-toast';
 import { getAppwrite, isAppwriteConfigured, MISSING_APPWRITE_ENV } from '@/lib/appwrite';
 import { getRow } from '@/lib/data';
-import { TABLES } from '@/lib/constants';
+import { type DashboardSection, sectionsFor, TABLES, type UserRole } from '@/lib/constants';
 
 export interface AdminUser {
     id: string;
     email: string | null;
     name: string | null;
+    /** The stored `profiles.role`, so the panel can show the truth about it. */
+    role: UserRole;
+    /** The sections this role may use — never empty for a signed-in user. */
+    sections: readonly DashboardSection[];
 }
 
 interface AuthContextType {
@@ -26,10 +30,10 @@ interface AuthContextType {
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export const ADMIN_REQUIRED_MESSAGE =
-    'Access denied. This account is not an approved, active administrator.';
+    'Access denied. This account does not have access to the admin panel.';
 
 export const ADMIN_REVOKED_MESSAGE =
-    'Your administrator access has been revoked or your account was disabled. You have been signed out.';
+    'Your access has been revoked or your account was disabled. You have been signed out.';
 
 /** Minimum gap between admin re-checks triggered by window focus. */
 const FOCUS_RECHECK_INTERVAL_MS = 60_000;
@@ -61,19 +65,32 @@ interface ProfileRow {
 }
 
 /**
- * Loads the signed-in user's own profile and returns it only if it is an
- * approved, non-disabled admin (the same rule the `write` Function applies).
+ * Loads the signed-in user's own profile and returns it only if its role
+ * has somewhere to go in this panel.
+ *
+ * `role === 'admin'` was the whole test, so matrix 4.1's other three
+ * panel roles could not sign in at all — not even tech support, which the
+ * mobile app gives an Admin tab. The rule is now the role's section list:
+ * approval and the disabled flag still decide first, exactly as
+ * `accountLabels` does on the server, because an unapproved staff account
+ * is a plain user there and must be one here too.
+ *
+ * It returns the sections rather than a boolean so there is one answer to
+ * "what may this account do", read once per profile load and used by the
+ * nav, the subtitle and the per-page guard alike.
  */
-async function loadAdminProfile(userId: string, fallbackEmail: string | null): Promise<AdminUser | null> {
+async function loadPanelProfile(userId: string, fallbackEmail: string | null): Promise<AdminUser | null> {
     const row = await getRow<ProfileRow>(TABLES.PROFILES, userId);
-    if (!row || row.role !== 'admin' || row.isApproved !== true || row.isDisabled === true) {
-        return null;
-    }
+    if (!row || row.isApproved !== true || row.isDisabled === true) return null;
+    const sections = sectionsFor(row.role);
+    if (sections.length === 0) return null;
     const name = typeof row.name === 'string' ? row.name.trim() : '';
     return {
         id: userId,
         email: (typeof row.email === 'string' ? row.email : null) ?? fallbackEmail,
         name: name && name !== 'User' ? name : null,
+        role: row.role as UserRole,
+        sections,
     };
 }
 
@@ -166,7 +183,7 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
             try {
                 const account_ = await account.get();
                 if (cancelled) return;
-                const admin = await loadAdminProfile(account_.$id, account_.email || null);
+                const admin = await loadPanelProfile(account_.$id, account_.email || null);
                 if (cancelled) return;
                 if (admin) {
                     verifiedUserId.current = admin.id;
@@ -196,11 +213,19 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
             recheckInFlight = true;
             lastRecheck = Date.now();
             try {
-                const admin = await loadAdminProfile(userId, user?.email ?? null);
+                const admin = await loadPanelProfile(userId, user?.email ?? null);
                 if (cancelled || verifiedUserId.current !== userId) return;
                 if (admin) {
+                    // `role` is in the comparison, or a role changed while
+                    // the tab was open keeps the sections it signed in
+                    // with until somebody reloads the page — which is the
+                    // one thing this re-check exists to catch.
                     setUser((prev) =>
-                        prev && prev.id === admin.id && prev.email === admin.email && prev.name === admin.name
+                        prev &&
+                        prev.id === admin.id &&
+                        prev.email === admin.email &&
+                        prev.name === admin.name &&
+                        prev.role === admin.role
                             ? prev
                             : admin,
                     );
@@ -260,7 +285,7 @@ function ConfiguredAuthProvider({ children }: { children: React.ReactNode }) {
 
             let admin: AdminUser | null;
             try {
-                admin = await loadAdminProfile(session.userId, email.trim());
+                admin = await loadPanelProfile(session.userId, email.trim());
             } catch (profileError) {
                 await signOutLocal().catch(() => {});
                 throw profileError;

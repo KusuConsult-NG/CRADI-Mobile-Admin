@@ -24,6 +24,15 @@ const PNG_1PX =
 
 export const ADMIN = { email: 'admin@cradi.test', password: 'admin-pass' };
 
+/**
+ * An approved LDP Coordinator — the coordination tier of matrix 4.1.
+ *
+ * In the panel, but without user administration or app settings, which
+ * the server refuses anyway (`requireAdmin`, and `app_settings` is
+ * `label:admin`).
+ */
+export const COORDINATOR = { email: 'ngozi@cradi.test', password: 'ngozi-pass' };
+
 /** Every Function call goes to the one merged Function; the route is in the body. */
 export const CLIENT_EXECUTIONS = '/functions/client/executions';
 
@@ -173,10 +182,14 @@ export const test = base.extend<{ mock: MockApi; consoleGuard: ConsoleGuard }>({
 });
 
 /** Signs in through the login form and waits for `expectedPath` (default /dashboard). */
-export async function login(page: Page, opts: { path?: string; expectedPath?: string } = {}) {
+export async function login(
+    page: Page,
+    opts: { path?: string; expectedPath?: string; as?: { email: string; password: string } } = {},
+) {
+    const who = opts.as ?? ADMIN;
     await page.goto(opts.path ?? '/login');
-    await page.getByLabel('Email Address').fill(ADMIN.email);
-    await page.getByLabel('Password', { exact: true }).fill(ADMIN.password);
+    await page.getByLabel('Email Address').fill(who.email);
+    await page.getByLabel('Password', { exact: true }).fill(who.password);
     await page.getByRole('button', { name: 'Sign In' }).click();
     await expect(page).toHaveURL(new RegExp(`${escapeRegExp(opts.expectedPath ?? '/dashboard')}$`));
     // Wait for the "Logged in successfully" toast to clear. It is rendered in an
