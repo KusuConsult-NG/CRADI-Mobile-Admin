@@ -51,7 +51,13 @@ jobs:
 
   e2e:
     name: Playwright E2E
-    runs-on: ubuntu-latest
+    # Pinned, not `ubuntu-latest`. That label rolled to Ubuntu 26.04, which
+    # Playwright 1.56.1 has no dependency recipe for: `playwright install
+    # --with-deps` fails with "Playwright does not support chromium on
+    # ubuntu26.04-x64" before a single test runs. Raise this to a newer
+    # image only together with the @playwright/test version in package.json
+    # — the browser build and the recipe have to agree.
+    runs-on: ubuntu-24.04
     needs: check
 
     # The suite runs against an in-memory Supabase mock (e2e/mock-supabase.mjs)
